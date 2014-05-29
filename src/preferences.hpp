@@ -168,6 +168,35 @@ namespace preferences {
 	void set_show_fps(bool show);
 
 	bool use_joystick();
+    void set_use_joystick(bool new_val);
+    
+    // APR: SDL Name and GUID of joystick whose custom configuration is saved in preferences. 
+    // An empty ("") GUID string means no meaningful joystick preferences are saved.
+    std::string joystick_guid();
+    void set_joystick_guid(std::string new_guid);
+
+    std::string joystick_name();
+    void set_joystick_name(std::string new_name);
+
+    // APR returns AXIS or BUTTON, the type of the joystick component being
+    // used for the in-game action controller_command, which will be one of UP,
+    // DOWN... ATTACK etc
+    int joy_part_kind(int controller_command);
+
+    // The BUTTON/AXIS id number for the joystick component being used for controller_command.
+    int joy_part_id(int controller_command);
+
+    // For AXIS controls, the control signal will be on when the axis is in the range [low, high], as returned by these two functions.
+    // For non-axis controls, these functions return arbitrary values.
+    int joy_part_data0(int controller_command);
+    int joy_part_data1(int controller_command);
+
+    // Setters corresponding to above.
+    void set_joy_part_kind(int controller_command, int value);
+    void set_joy_part_id(int controller_command, int value);
+    void set_joy_part_data0(int controller_command, int value);
+    void set_joy_part_data1(int controller_command, int value);
+
 
 	//load compiled data from data/compiled/
 	bool load_compiled();

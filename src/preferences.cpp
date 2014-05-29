@@ -32,6 +32,7 @@
 #include "formatter.hpp"
 #include "formula_callable.hpp"
 #include "game_registry.hpp"
+#include "joystick.hpp"
 #include "json_parser.hpp"
 #include "module.hpp"
 #include "preferences.hpp"
@@ -375,7 +376,18 @@ namespace preferences {
 		bool internal_tbs_server_ = false;
 
 		std::string locale_;
-		
+	
+        // Custom joystick configuration, refer to documentation in
+        // joystick.cpp
+        std::string joystick_guid_;
+        std::string joystick_name_;
+        
+        int joy_part_kind_[controls::NUM_CONTROLS];
+        int joy_part_id_[controls::NUM_CONTROLS];
+        int joy_part_data0_[controls::NUM_CONTROLS];
+        int joy_part_data1_[controls::NUM_CONTROLS];
+
+
 #if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
 		
 #ifndef PREFERENCES_PATH
@@ -880,6 +892,76 @@ namespace preferences {
 		password_ = str.str();
 	}
 
+
+    // Custom joystick configuration, setters and getters for the name and guid
+    // of the configured joystick.
+    std::string joystick_guid() {
+        return joystick_guid_;
+    }
+
+    void set_joystick_guid(std::string new_str) {
+        joystick_guid_ = new_str;
+    }
+
+    std::string joystick_name() {
+        return joystick_name_;
+    }
+
+    void set_joystick_name(std::string new_str) {
+        joystick_name_ = new_str;
+    }
+
+    // Setters and getters for the custom joystick configuration.  c is the
+    // index of the in-game control, for example controller::CONTROL_UP, and v
+    // is the value relating to its physical mapping.
+    int joy_part_kind(int c) {
+        ASSERT_GE(c, 0);
+        ASSERT_LT(c, controls::NUM_CONTROLS);
+        return joy_part_kind_[c];
+    }
+
+    int joy_part_id(int c) {
+        ASSERT_GE(c, 0);
+        ASSERT_LT(c, controls::NUM_CONTROLS);
+        return joy_part_id_[c];
+    }
+
+    int joy_part_data0(int c) {
+        ASSERT_GE(c, 0);
+        ASSERT_LT(c, controls::NUM_CONTROLS);
+        return joy_part_data0_[c];
+    }
+
+    int joy_part_data1(int c) {
+        ASSERT_GE(c, 0);
+        ASSERT_LT(c, controls::NUM_CONTROLS);
+        return joy_part_data1_[c];
+    }
+    
+    void set_joy_part_kind(int c, int v) {
+        ASSERT_GE(c, 0);
+        ASSERT_LT(c, controls::NUM_CONTROLS);
+        joy_part_kind_[c] = v;
+    }
+
+    void set_joy_part_id(int c, int v) {
+        ASSERT_GE(c, 0);
+        ASSERT_LT(c, controls::NUM_CONTROLS);
+        joy_part_id_[c] = v;
+    }
+
+    void set_joy_part_data0(int c, int v) {
+        ASSERT_GE(c, 0);
+        ASSERT_LT(c, controls::NUM_CONTROLS);
+        joy_part_data0_[c] = v;
+    }
+
+    void set_joy_part_data1(int c, int v) {
+        ASSERT_GE(c, 0);
+        ASSERT_LT(c, controls::NUM_CONTROLS);
+        joy_part_data1_[c] = v;
+    }
+
 #if defined(TARGET_OS_HARMATTAN) || defined(TARGET_PANDORA) || defined(TARGET_TEGRA) || defined(TARGET_BLACKBERRY)
 	bool use_fbo()
 	{
@@ -954,6 +1036,12 @@ namespace preferences {
 	{
 		return use_joystick_;
 	}
+
+    void set_use_joystick(bool new_val)
+    {
+        use_joystick_ = new_val;
+    }
+
 	
 	game_logic::formula_callable* registry()
 	{
@@ -1068,6 +1156,46 @@ namespace preferences {
 			}
 		}
 
+        // Load custom joystick configuration settings.  Refer to joystick.cpp
+        // for documentation of these settings.
+        std::cerr << "Starting to fill in custom joystick configuration variables in preferences... " << std::endl;
+		
+        variant jc_node = node["joystick_configuration"];
+        
+        // If there was no "joystick_configuration" we still want an actual
+        // empty node.  That makes it easier to create default values in the
+        // code below.
+        if(jc_node.is_null()) {
+            variant_builder vb;
+            jc_node = vb.build();
+        }
+
+        joystick_guid_ = jc_node["guid"].as_string_default("");
+        joystick_name_ = jc_node["name"].as_string_default("-no-joystick-named-");
+        std::cerr << "got id [" << joystick_guid_ << "] for [" << joystick_name_ << "]" << std::endl;
+        
+        for(int c = 0; c < controls::NUM_CONTROLS; c++) {
+
+            // Work out the string keys used to store the preferences in the
+            // file/node.
+            std::string key_type =  std::string(controls::control_names()[c]) + "_kind";
+            std::string key_id =    std::string(controls::control_names()[c]) + "_id";
+            std::string key_low =   std::string(controls::control_names()[c]) + "_data0";
+            std::string key_high =  std::string(controls::control_names()[c]) + "_data1";
+
+            // Extract the preferences, or use the defaults.  Make sure values
+            // are in the valid range, even if they are still stupid.
+            joy_part_kind_[c] = joystick::validate_kind(jc_node[key_type].as_int(joystick::default_kind(c)));
+            joy_part_id_[c] = joystick::validate_id(jc_node[key_id].as_int(joystick::default_id(c, joy_part_kind_[c]))); 
+            joy_part_data0_[c] = joystick::validate_low(jc_node[key_low].as_int(joystick::default_low(c, joy_part_kind_[c])), joy_part_kind_[c]);
+            joy_part_data1_[c] = joystick::validate_high(jc_node[key_high].as_int(joystick::default_high(c, joy_part_kind_[c]))); 
+
+            std::cerr << "For control " << std::string(controls::control_names()[c]) << " got (" << joy_part_kind_[c] << ":" << joy_part_id_[c] << ":" << joy_part_data0_[c] << ":" << joy_part_data1_[c] << ")" << std::endl;
+        }
+
+        std::cerr << "...done filling in custom joystick configuration." << std::endl;
+     
+
         preferences::set_32bpp_textures_if_kb_memory_at_least( 512000 );
 #endif
 	}
@@ -1098,6 +1226,33 @@ namespace preferences {
 				node.add(std::string("mouse_") + controls::control_names()[ctrl], variant(n));
 			}
 		}
+
+        // See joystick.cpp for a detailed explanation of how the joystick settings are used.
+        std::cerr << "Formatting joystick preferences into variant node in preparation for file writing... ";
+        
+        variant_builder jc_node;
+
+        jc_node.add("guid", joystick_guid_);
+        jc_node.add("name", joystick_name_);
+        
+        for(int c = 0; c < controls::NUM_CONTROLS; c++) {
+
+            // Work out the string keys used to store the preferences in the file / node.
+            std::string key_kind =      std::string(controls::control_names()[c]) + "_kind";
+            std::string key_id =        std::string(controls::control_names()[c]) + "_id";
+            std::string key_data0 =     std::string(controls::control_names()[c]) + "_data0";
+            std::string key_data1 =     std::string(controls::control_names()[c]) + "_data1";
+
+            // Build the preferences into the node.
+            jc_node.add(key_kind, joy_part_kind_[c]);
+            jc_node.add(key_id, joy_part_id_[c]);
+            jc_node.add(key_data0, joy_part_data0_[c]);
+            jc_node.add(key_data1, joy_part_data1_[c]);
+        }
+
+        node.add("joystick_configuration", jc_node.build());
+
+        std::cerr << " done filling in node with joystick preferences." << std::endl;
 
 		node.add("locale", locale_);
 		node.add("username", variant(get_username()));
