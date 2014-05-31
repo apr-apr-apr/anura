@@ -912,7 +912,7 @@ namespace preferences {
     }
 
     // Setters and getters for the custom joystick configuration.  c is the
-    // index of the in-game control, for example controller::CONTROL_UP, and v
+    // index of the in-game control, for example controls::CONTROL_UP, and v
     // is the value relating to its physical mapping.
     int joy_part_kind(int c) {
         ASSERT_GE(c, 0);
@@ -1158,8 +1158,6 @@ namespace preferences {
 
         // Load custom joystick configuration settings.  Refer to joystick.cpp
         // for documentation of these settings.
-        std::cerr << "Starting to fill in custom joystick configuration variables in preferences... " << std::endl;
-		
         variant jc_node = node["joystick_configuration"];
         
         // If there was no "joystick_configuration" we still want an actual
@@ -1187,14 +1185,9 @@ namespace preferences {
             // are in the valid range, even if they are still stupid.
             joy_part_kind_[c] = joystick::validate_kind(jc_node[key_type].as_int(joystick::default_kind(c)));
             joy_part_id_[c] = joystick::validate_id(jc_node[key_id].as_int(joystick::default_id(c, joy_part_kind_[c]))); 
-            joy_part_data0_[c] = joystick::validate_low(jc_node[key_low].as_int(joystick::default_low(c, joy_part_kind_[c])), joy_part_kind_[c]);
-            joy_part_data1_[c] = joystick::validate_high(jc_node[key_high].as_int(joystick::default_high(c, joy_part_kind_[c]))); 
-
-            std::cerr << "For control " << std::string(controls::control_names()[c]) << " got (" << joy_part_kind_[c] << ":" << joy_part_id_[c] << ":" << joy_part_data0_[c] << ":" << joy_part_data1_[c] << ")" << std::endl;
+            joy_part_data0_[c] = joystick::validate_data0(jc_node[key_low].as_int(joystick::default_low(c, joy_part_kind_[c])), joy_part_kind_[c]);
+            joy_part_data1_[c] = joystick::validate_data1(jc_node[key_high].as_int(joystick::default_high(c, joy_part_kind_[c]))); 
         }
-
-        std::cerr << "...done filling in custom joystick configuration." << std::endl;
-     
 
         preferences::set_32bpp_textures_if_kb_memory_at_least( 512000 );
 #endif
@@ -1228,8 +1221,6 @@ namespace preferences {
 		}
 
         // See joystick.cpp for a detailed explanation of how the joystick settings are used.
-        std::cerr << "Formatting joystick preferences into variant node in preparation for file writing... ";
-        
         variant_builder jc_node;
 
         jc_node.add("guid", joystick_guid_);
@@ -1251,8 +1242,6 @@ namespace preferences {
         }
 
         node.add("joystick_configuration", jc_node.build());
-
-        std::cerr << " done filling in node with joystick preferences." << std::endl;
 
 		node.add("locale", locale_);
 		node.add("username", variant(get_username()));

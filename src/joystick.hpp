@@ -26,7 +26,9 @@ namespace joystick {
     // Wrapper class responsible for initialising and shutting down joystick
     // module.  Retained as interim measure.  Should subsume joystick_manager.
     struct manager {
+        // Initialise and run joystick module.
         manager();
+        // Shut down joystick module.
         ~manager();
     };
     
@@ -101,19 +103,18 @@ namespace joystick {
     int default_high(int curr_control, int kind);
 
     // Ensure that joystick configuration preference encodings are in legal
-    // ranges for their data type.
+    // ranges for their data type.  Valid range for data0 depends on the 
+    // validated run-time kind for the joystick component in question.
     int validate_kind(int candidate_kind);
     int validate_id(int candidate_id);
-    int validate_low(int candidate_low, int validated_high);
-    int validate_high(int candidate_high);
+    int validate_data0(int candidate_low, int validated_kind); 
+    int validate_data1(int candidate_data1);
 
     // When silent mode is on/true, up(), down(), left() right() and button()
     // always return false, regardless of whether the controls are actually
     // being pressed.
     void set_silent(bool on);
 
-    // XXX Unused, candidate for deletion May 2014
-    std::vector<int> get_info(); 
 }
 
 #endif

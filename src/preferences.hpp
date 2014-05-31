@@ -170,7 +170,7 @@ namespace preferences {
 	bool use_joystick();
     void set_use_joystick(bool new_val);
     
-    // APR: SDL Name and GUID of joystick whose custom configuration is saved in preferences. 
+    // SDL Name and GUID of joystick whose custom configuration is saved in preferences. 
     // An empty ("") GUID string means no meaningful joystick preferences are saved.
     std::string joystick_guid();
     void set_joystick_guid(std::string new_guid);
@@ -178,16 +178,23 @@ namespace preferences {
     std::string joystick_name();
     void set_joystick_name(std::string new_name);
 
-    // APR returns AXIS or BUTTON, the type of the joystick component being
-    // used for the in-game action controller_command, which will be one of UP,
-    // DOWN... ATTACK etc
+    // These functions all say which part of the joystick an Anura in-game
+    // control is mapped to.  controller_command is one of the controls in
+    // contorls::CONTROL_ITEM.  See joystick.cpp's detailed documentation
+    // of controller configuration preferences.
+    //
+    // Returns which kind of controller component (axis/hat/button from
+    // joystick::part_kind) is being used for 'controller_command'.
     int joy_part_kind(int controller_command);
 
-    // The BUTTON/AXIS id number for the joystick component being used for controller_command.
+    // The id number for the joystick component being used for
+    // controller_command.
     int joy_part_id(int controller_command);
 
-    // For AXIS controls, the control signal will be on when the axis is in the range [low, high], as returned by these two functions.
-    // For non-axis controls, these functions return arbitrary values.
+    // For AXIS controls, the control signal will be on when the axis is in the
+    // range [data0, data1], as returned by these two functions.  For HAT
+    // controls, data0 indicates which hat position we want and data1 is
+    // arbitrary.  For BUTTON controls both data0 and data1 are arbitrary.
     int joy_part_data0(int controller_command);
     int joy_part_data1(int controller_command);
 

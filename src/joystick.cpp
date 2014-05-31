@@ -962,599 +962,574 @@ namespace joystick {
 
 
 
+    namespace {
+        // Note: These shared pointers will control objects that have custom
+        // destructors containingSDL_ThingyClose() calls.  Being in file/namespace
+        // scope, they will also live till the end of the program.  So we need to
+        // be sure to clear() these collections in order to invoke the underlying
+        // destructors before we try calling SDL_Quit or anything else that will
+        // invalidate calls to SDL_ThingyClose().
 
-
-namespace {
-    // Note: These shared pointers will control objects that have custom
-    // destructors containingSDL_ThingyClose() calls.  Being in file/namespace
-    // scope, they will also live till the end of the program.  So we need to
-    // be sure to clear() these collections in order to invoke the underlying
-    // destructors before we try calling SDL_Quit or anything else that will
-    // invalidate calls to SDL_ThingyClose().
-
-    joystick_manager* local_manager;
-    player_controller* local_joystick;
-    bool silent = false;
-}
-
-
+        joystick_manager* local_manager;
+        player_controller* local_joystick;
+        bool silent = false;
+    }
 
 
     // Sets up signal_map from the user preferences that have been read
     // in from the user configuration file. We rely on the preferences reading
     // process already having created sensible defaults to cover preferences
     // that were missing in the file.
-void joystick_manager::initial_setup() {
+    void joystick_manager::initial_setup() {
 
-    if(SDL_InitSubSystem(SDL_INIT_JOYSTICK) != 0) {
-		std::cerr << "ERROR: Unable to initialise joystick subsystem" << std::endl;
-        // We can pretty much abandon hope of using a joystick now.  Just
-        // create a non-functional player_controller and leave.
-        local_player_controller = std::make_shared<player_controller>();
-        return;
-	}
+        if(SDL_InitSubSystem(SDL_INIT_JOYSTICK) != 0) {
+            std::cerr << "ERROR: Unable to initialise joystick subsystem" << std::endl;
+            // We can pretty much abandon hope of using a joystick now.  Just
+            // create a non-functional player_controller and leave.
+            local_player_controller = std::make_shared<player_controller>();
+            return;
+        }
 
-	if(SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) != 0) {
-		std::cerr << "ERROR: Unable to initialise game controller subsystem" << std::endl;
-	} else {
-
-        // In the future Anura should probably load a central
-        // SDL_GameController database, but for now we just rely on SDL's
-        // inbuilt db (from whenever SDL was compiled, maybe ages ago) and load
-        // the user's own SDL_GameController configuration database, if it
-        // exists
-        std::string user_sdl_gamecontroller_db = std::string(preferences::user_data_path()) + "/sdl_gamecontrollerdb.txt";
-        if(sys::file_exists(user_sdl_gamecontroller_db)) {
-            int db_result = SDL_GameControllerAddMappingsFromFile(user_sdl_gamecontroller_db.c_str());
-            if(db_result == -1) {
-                std::cerr << "Warning: SDL not happy with " << user_sdl_gamecontroller_db << ".  Persisting." << std::endl;
-            } else {
-                std::cerr << "SDL found " << db_result << " interesting game controller descriptions in [" << user_sdl_gamecontroller_db << "]." << std::endl;
-            }
+        if(SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) != 0) {
+            std::cerr << "ERROR: Unable to initialise game controller subsystem" << std::endl;
         } else {
-            std::cerr << "There is no user game controller database called [" << user_sdl_gamecontroller_db << "]." << std::endl;
-        }
-    }
 
-	if(SDL_InitSubSystem(SDL_INIT_HAPTIC) != 0) {
-		std::cerr << "ERROR: Unable to initialise haptic subsystem" << std::endl;
-	}
-    
-    // Now we're going to open every joystick we can grab (except on Android
-    // where we stick to just the first - is that the system stick?)
-#if defined(__ANDROID__)
-	int n = 0; {
-#else
-  	for(int n = 0; n != SDL_NumJoysticks(); ++n) {
-#endif
-        std::shared_ptr<sdl_controller> j = std::shared_ptr<sdl_controller>(sdl_controller::open(n));
-        if(j) {
-            joysticks.push_back(j);
-        } else {
-            std::cerr << "Warning: could not open SDL_Joystick at position " << n << " in device list." << std::endl;
-        }
-
-		SDL_Haptic *haptic = SDL_HapticOpen(n);
-		if(haptic) {
-            // Note: The SDL_HapticClose() in our custom destructor must be called before we shut SDL down.
-            // haptic::haptic_devices may survive until the end of the program, though, so we need to explicitly
-            // clear it out before shutting SDL down.
-			haptic::haptic_devices[n] = std::shared_ptr<SDL_Haptic>(haptic, [](SDL_Haptic* h){SDL_HapticClose(h);});
-			if(SDL_HapticRumbleInit(haptic) != 0) {
-				std::cerr << "Failed to initialise a simple rumble effect" << std::endl;
-				haptic::haptic_devices.erase(n);
-			}
-			// buzz the device when we start.
-			if(SDL_HapticRumblePlay(haptic, 0.5, 1000) != 0) {
-				std::cerr << "Failed to play a simple rumble effect" << std::endl;
-				haptic::haptic_devices.erase(n);
-			}
-		}
-	}
-
-	std::cerr << "INFO: Initialized " << joysticks.size() << " joysticks" << std::endl;
-	std::cerr << "INFO: Initialized " << haptic::haptic_devices.size() << " haptic devices" << std::endl;
-
-    // Make the player_controller that links our hardware controls to in-game controls 
-    local_player_controller = std::make_shared<player_controller>();
-
-    // See if the joystick saved in preferences is connected now.  If not, we'll settle for the
-    // first available stick, if there is one.
-    std::shared_ptr<sdl_controller> chosen_stick = NULL;
-    if(preferences::joystick_guid().length() > 0) { // empty string indicates that we have no particular saved preferences
-        for(auto curr_stick : joysticks) {
-            if(curr_stick->get_guid() == preferences::joystick_guid()) {
-                chosen_stick = curr_stick;
-                break;
-            }
-        }
-    }
-
-    if(chosen_stick != NULL) {
-        local_player_controller->change_device(chosen_stick);
-    } else if(joysticks.size() > 0) {
-        local_player_controller->change_device(joysticks[0]);
-    }
-
-    // Hacky way to link in to the singular interface.
-    local_joystick = local_player_controller.get();
-}
-
-
-
-
-// validate_something() functions for ensuring that preferences:: values are
-// in-range.
-//
-// validate_something(x, context) will return x if it is valid given 'context',
-// otherwise it will return an arbitrary valid value.  validate_kind(k) returns
-
-int validate_kind(int candidate_kind) {
-    switch(candidate_kind) {
-        case AXIS:
-        case BUTTON:
-        case HAT:
-            return candidate_kind;
-        default:
-            return BUTTON;           
-    }
-}
-
-int validate_id(int id) {
-    if(id < 0 || id > 255) {
-        return 0;
-    }
-    return id;
-}
-
-int validate_low(int low, int kind) {
-    switch(kind) {
-        case AXIS:
-            return low;
-        case BUTTON:
-            return low;
-        case HAT:
-            switch(low) {             
-                case SDL_HAT_UP:
-                case SDL_HAT_DOWN:
-                case SDL_HAT_LEFT:
-                case SDL_HAT_RIGHT:
-                case SDL_HAT_LEFTUP:
-                case SDL_HAT_LEFTDOWN:
-                case SDL_HAT_RIGHTUP:
-                case SDL_HAT_RIGHTDOWN:
-                    return low;
-                default:
-                    return SDL_HAT_RIGHT;
-            }
-        default:
-            ASSERT_FATAL("kind out of range when validating low");
-            break;
-    }
-}
-
-int validate_high(int high) {
-    return high;
-}
-
-
-// default_something() functions return default values for *preferences* only.
-// They are here to fill in incomplete preferences - usually the result of
-// someone manually editing the preferences and cutting bits out.
-//
-// default_ASPECT(control, context) returns the default ASPECT of 'control'
-// given 'context'.  
-//
-// There is no guarantee that the defaults will be sensible
-// or interact sensibly with other pre-existing settings.
-//
-// Will fail if 'control' is out of range.
-
-int default_kind(int curr_control) {
-    using namespace controls;
-    switch(curr_control) {
-        case CONTROL_UP:
-        case CONTROL_DOWN:
-        case CONTROL_LEFT:
-        case CONTROL_RIGHT:
-            return AXIS;
-        case CONTROL_ATTACK:
-        case CONTROL_JUMP:
-        case CONTROL_TONGUE:
-            return BUTTON;
-        default:
-            ASSERT_FATAL("curr_control out of range.");        
-    }
-}
-        
-int default_id(int curr_control, int kind) {
-    using namespace controls;
-    switch(kind) {
-        case AXIS:
-            switch(curr_control) {
-                case CONTROL_UP:
-                case CONTROL_DOWN:
-                    return 1;
-                case CONTROL_LEFT:
-                case CONTROL_RIGHT:
-                    return 0;
-                case CONTROL_ATTACK:
-                    return 2;
-                case CONTROL_JUMP:
-                    return 3;
-                case CONTROL_TONGUE:
-                    return 4;
-                default:
-                    ASSERT_FATAL("curr_control out of range.");
-            }
-            break;
-        case BUTTON:
-            switch(curr_control) {
-                case CONTROL_UP:
-                    return 3;
-                case CONTROL_DOWN:
-                    return 4;
-                case CONTROL_LEFT:
-                    return 5;
-                case CONTROL_RIGHT:
-                    return 6;
-                case CONTROL_ATTACK:
-                    return 0;
-                case CONTROL_JUMP:
-                    return 1;
-                case CONTROL_TONGUE:
-                    return 2;
-                default:
-                    ASSERT_FATAL("curr_control out of range.");
-            }
-            break;
-        case HAT:
-            switch(curr_control) {
-                case CONTROL_UP:
-                case CONTROL_DOWN:
-                case CONTROL_LEFT:
-                case CONTROL_RIGHT:
-                    return 0;
-                case CONTROL_ATTACK:
-                case CONTROL_JUMP:
-                case CONTROL_TONGUE:
-                    return 1;
-                default:
-                    ASSERT_FATAL("curr_control out of range.");
-            }
-            break;
-        default:
-            ASSERT_FATAL("kind out of range");
-    }
-}
-
-int default_low(int curr_control, int kind) {
-    using namespace controls;
-    switch(kind) {
-        case AXIS:
-            switch(curr_control) {
-                case CONTROL_UP:
-                    return -large_mag;
-                case CONTROL_DOWN:
-                    return small_mag;
-                case CONTROL_LEFT:
-                    return -large_mag;
-                case CONTROL_RIGHT:
-                    return small_mag;
-                case CONTROL_ATTACK:
-                    return -large_mag;
-                case CONTROL_JUMP:
-                    return -large_mag;
-                case CONTROL_TONGUE:
-                    return -large_mag;
-                default:
-                    ASSERT_FATAL("curr_control out of range.");
-            }
-            break;
-        case BUTTON:
-            return 0;
-            break;
-        case HAT:
-            switch(curr_control) {
-                case CONTROL_UP:
-                    return SDL_HAT_UP;
-                case CONTROL_DOWN:
-                    return SDL_HAT_DOWN;
-                case CONTROL_LEFT:
-                    return SDL_HAT_LEFT;
-                case CONTROL_RIGHT:
-                    return SDL_HAT_RIGHT;
-                case CONTROL_ATTACK:
-                    return SDL_HAT_DOWN;
-                case CONTROL_JUMP:
-                    return SDL_HAT_RIGHT;
-                case CONTROL_TONGUE:
-                    return SDL_HAT_UP;
-                default:
-                    ASSERT_FATAL("curr_control out of range.");
-            }
-            break;
-        default:
-            ASSERT_FATAL("kind out of range");
-    }
-}
-
-int default_high(int curr_control, int kind) {
-    using namespace controls;
-    switch(kind) {
-        case AXIS:
-            switch(curr_control) {
-                case CONTROL_UP:
-                    return -small_mag;
-                case CONTROL_DOWN:
-                    return large_mag;
-                case CONTROL_LEFT:
-                    return -small_mag;
-                case CONTROL_RIGHT:
-                    return large_mag;
-                case CONTROL_ATTACK:
-                    return -small_mag;
-                case CONTROL_JUMP:
-                    return -small_mag;
-                case CONTROL_TONGUE:
-                    return -small_mag;
-                default:
-                    ASSERT_FATAL("curr_control out of range.");
-            }
-            break;
-        case BUTTON:
-        case HAT:
-            return 0;
-            break;
-        default:
-            ASSERT_FATAL("kind out of range");
-    }
-}
-
-
-// 
-// Singluar Interface
-//
-// Even though joystick_manager could be easily adapted to support multiple players, Anura doesn't presently support more than one local player.
-// Other modules are in the habit of using joystick:: functions to access the singular joystick.  This singular interface is maintained here,
-// passing on all the relevant calls to a joystick_manager.
-//
-// The only additional functionality the singular interface provides is silent mode. 
-//
-
-// When silence is on, all the singlular device input functions will always return false.
-// Direct input reading calls through player_controller and joystick_manager are
-// unaffected, as is direct collection of SDL input events.
-void set_silent(bool new_val) {
-    silent = new_val;
-}
-
-//
-// Singluar to joystick_manager calls.  See header and joystick_manager documentation.
-//
-
-bool synchronise_device_list() {
-    return local_manager->synch_devices();
-}
-
-std::shared_ptr<std::vector<std::string>> joystick_names() {
-    return local_manager->joystick_names();
-}
-
-std::shared_ptr<std::vector<SDL_JoystickID>> joystick_ids() {
-    return local_manager->joystick_ids();
-}
-
-void change_device(int local_joystick_index) {
-    local_manager->change_device(local_joystick_index);
-}
-
-SDL_JoystickID current_device() {
-    return local_manager->device_id();
-}
-
-//
-// Singular to player_controller calls.  See player_controller documentation.
-//
-
-void change_mapping(const int* kinds, const int* ids, const int* data0, const int* data1) {
-    local_joystick->change_mapping(kinds, ids, data0, data1);
-    local_joystick->set_preferences_from_configuration();
-}
-
-bool up() {
-    if(silent) {
-        return false;
-    } else {
-        return local_joystick->up();
-    }
-}
-
-bool down() {
-    if(silent) {
-        return false;
-    } else {
-        return local_joystick->down();
-    }
-}
-
-bool left() {
-    if(silent) {
-        return false;
-    } else {
-    return local_joystick->left();
-    }
-}
-
-bool right() {
-    if(silent) {
-        return false;
-    } else {
-    return local_joystick->right();
-    }
-}
-
-bool button(int x) {
-    if(silent) {
-        return false;
-    } else {
-        return local_joystick->button(x);
-    }
-} 
-
-
-
-
-
-manager::manager() {
-    ASSERT_RANGE_II(1,1,1);
-    ASSERT_RANGE_XX(1,2,3);
-    ASSERT_RANGE_IX(1,1,2);
-    ASSERT_RANGE_XI(1,2,2);
-    int four = 4;
-    int five = 5;
-    int six = 6;
-    int seven = 7;
-    //ASSERT_RANGE_II(five, six, five);
-    //ASSERT_RANGE_II(six, five, seven); 
-    //ASSERT_RANGE_XX(six, six, seven);
-    //ASSERT_RANGE_XX(five, six, six);
-    //ASSERT_RANGE_IX(five, four, six);
-    //ASSERT_RANGE_IX(five, six, six);
-    //ASSERT_RANGE_XI(four, four, five);
-    //ASSERT_RANGE_XI(four, six, five);
-
-    
-    local_manager = new joystick_manager();
-    local_manager->initial_setup();
-}
-
-manager::~manager() {
-    delete local_manager;
-	haptic::get_effects().clear();
-	haptic::haptic_devices.clear();
-
-	SDL_QuitSubSystem(SDL_INIT_HAPTIC | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK); // We rely on shared_ptrs to SDL_Joystick structs having been deleted by this point.
-
-#if defined(TARGET_BLACKBERRY)
-	bps_shutdown();
-#endif
-}
-
-bool pump_events(const SDL_Event& ev, bool claimed) {
-    return local_manager->pump_events(ev, claimed);
-}
-
-// pump_events(event, already_claimed) checks the given SDL event to see if it
-// is relevant to the joysticks we are managing.  
-//
-// If claimed is already true, no check is made and we return true.  Otherwise,
-// if the event is relevant (a joystick add or remove event), the event is
-// processed and claimed by returning true.  If checking shows the event is not
-// relevant, the event is left unclaimed by returning false.
-//
-// If a joystick has been added, our joystick_manager will open it and add it
-// to the list of available devices.
-//
-// If a joystick has been removed, our joystick_manager will erase it
-// (triggering an SDL_Close()).  If the device the player is currently using is
-// removed, the player_controller for that device will be destroyed too. 
-bool joystick_manager::pump_events(const SDL_Event& ev, bool claimed) {
-	if(claimed) {
-		return claimed;
-	}
-   
-    // SDL generates attach and remove events for GameControllers too, but they
-    // are duplicate events on top of the joystick events SDL will generate for
-    // the underlying joysticks anyway.  So in the absence of any reason to
-    // treat GameControllers differently, we just ignore those superfluous
-    // events.
-
-    switch(ev.type) {
-        case SDL_JOYDEVICEADDED: {
-            int joy_index = ev.jdevice.which;
-            sdl_controller* new_controller = sdl_controller::open(joy_index);
-            if(!new_controller) {
-                std::cerr << "Warning: Tried to open new joy/game controller at device INDEX " << joy_index << " ... but SDL wouldn't!" << std::endl;
-            } else {
-                std::cerr << "INFO: Added new controller from SDL device INDEX " << joy_index << "." << std::endl;
-                joysticks.push_back(std::shared_ptr<sdl_controller>(new_controller));
-            }
-            return true;
-        }
-
-        case SDL_JOYDEVICEREMOVED: {
-            // What a nuisance.  One of the controllers has been ripped out. Now we need to 1)
-            // rid it from the player_controller if the player was using it and 2) rid it from
-            // the joystick list.
-            SDL_JoystickID joy_id = ev.jdevice.which;
-            
-            auto iter = joysticks.begin();
-            bool did_find = false;
-            bool was_in_use = false;
-            while(iter != joysticks.end()) {
-                if((*iter)->get_id() == joy_id) {
-                    if(local_player_controller->get_device()->get_id() == joy_id) {
-                        local_player_controller->change_device(NULL);
-                        was_in_use = true;
-                    }
-                    iter = joysticks.erase(iter);
-                    did_find = true;
-                    break;
+            // In the future Anura should probably load a central
+            // SDL_GameController database, but for now we just rely on SDL's
+            // inbuilt db (from whenever SDL was compiled, maybe ages ago) and load
+            // the user's own SDL_GameController configuration database, if it
+            // exists
+            std::string user_sdl_gamecontroller_db = std::string(preferences::user_data_path()) + "/sdl_gamecontrollerdb.txt";
+            if(sys::file_exists(user_sdl_gamecontroller_db)) {
+                int db_result = SDL_GameControllerAddMappingsFromFile(user_sdl_gamecontroller_db.c_str());
+                if(db_result == -1) {
+                    std::cerr << "Warning: SDL not happy with " << user_sdl_gamecontroller_db << ".  Persisting." << std::endl;
                 } else {
-                    iter++;
+                    std::cerr << "SDL found " << db_result << " interesting game controller descriptions in [" << user_sdl_gamecontroller_db << "]." << std::endl;
+                }
+            } else {
+                std::cerr << "There is no user game controller database called [" << user_sdl_gamecontroller_db << "]." << std::endl;
+            }
+        }
+
+        if(SDL_InitSubSystem(SDL_INIT_HAPTIC) != 0) {
+            std::cerr << "ERROR: Unable to initialise haptic subsystem" << std::endl;
+        }
+        
+        // Now we're going to open every joystick we can grab (except on Android
+        // where we stick to just the first - is that the system stick?)
+#if defined(__ANDROID__)
+        int n = 0; {
+#else
+        for(int n = 0; n != SDL_NumJoysticks(); ++n) {
+#endif
+            std::shared_ptr<sdl_controller> j = std::shared_ptr<sdl_controller>(sdl_controller::open(n));
+            if(j) {
+                joysticks.push_back(j);
+            } else {
+                std::cerr << "Warning: could not open SDL_Joystick at position " << n << " in device list." << std::endl;
+            }
+
+            SDL_Haptic *haptic = SDL_HapticOpen(n);
+            if(haptic) {
+                // Note: The SDL_HapticClose() in our custom destructor must be called before we shut SDL down.
+                // haptic::haptic_devices may survive until the end of the program, though, so we need to explicitly
+                // clear it out before shutting SDL down.
+                haptic::haptic_devices[n] = std::shared_ptr<SDL_Haptic>(haptic, [](SDL_Haptic* h){SDL_HapticClose(h);});
+                if(SDL_HapticRumbleInit(haptic) != 0) {
+                    std::cerr << "Failed to initialise a simple rumble effect" << std::endl;
+                    haptic::haptic_devices.erase(n);
+                }
+                // buzz the device when we start.
+                if(SDL_HapticRumblePlay(haptic, 0.5, 1000) != 0) {
+                    std::cerr << "Failed to play a simple rumble effect" << std::endl;
+                    haptic::haptic_devices.erase(n);
                 }
             }
-            if(!did_find) {
-                std::cerr << "Warning: Tried to remove controller identified as SDL instance ID " << joy_id << ", but SDL wouldn't!" << std::endl;
-            } else {
-                std::cerr << "INFO: Removed joy/game controller identified as ID " << joy_id << (was_in_use ? ", which was in use." : ", (not in use).") << std::endl;
-            }
-            return true;
         }
-  	}
-	return false;
-}
 
-// Update SDL's joystick statuses.  This will circulate input events as well.
-void update() {
-	if(preferences::use_joystick()) {
-		SDL_JoystickUpdate();
-	}
-}
+        std::cerr << "INFO: Initialized " << joysticks.size() << " joysticks" << std::endl;
+        std::cerr << "INFO: Initialized " << haptic::haptic_devices.size() << " haptic devices" << std::endl;
+
+        // Make the player_controller that links our hardware controls to in-game controls 
+        local_player_controller = std::make_shared<player_controller>();
+
+        // See if the joystick saved in preferences is connected now.  If not, we'll settle for the
+        // first available stick, if there is one.
+        std::shared_ptr<sdl_controller> chosen_stick = NULL;
+        if(preferences::joystick_guid().length() > 0) { // empty string indicates that we have no particular saved preferences
+            for(auto curr_stick : joysticks) {
+                if(curr_stick->get_guid() == preferences::joystick_guid()) {
+                    chosen_stick = curr_stick;
+                    break;
+                }
+            }
+        }
+
+        if(chosen_stick != NULL) {
+            local_player_controller->change_device(chosen_stick);
+        } else if(joysticks.size() > 0) {
+            local_player_controller->change_device(joysticks[0]);
+        }
+
+        // Hacky way to link in to the singular interface.
+        local_joystick = local_player_controller.get();
+    }
 
 
 
-int iphone_tilt() {
+
+    // validate_something() functions for ensuring that preferences:: values are
+    // in-range.
+    //
+    // validate_something(x, context) will return x if it is valid given 'context',
+    // otherwise it will return an arbitrary valid value.
+
+    int validate_kind(int candidate_kind) {
+        switch(candidate_kind) {
+            case AXIS:
+            case BUTTON:
+            case HAT:
+                return candidate_kind;
+            default:
+                return BUTTON;           
+        }
+    }
+
+    int validate_id(int id) {
+        if(id < 0 || id > 255) {
+            return 0;
+        }
+        return id;
+    }
+
+    int validate_data0(int data0, int kind) {
+        switch(kind) {
+            case AXIS:
+                return data0;
+            case BUTTON:
+                return data0;
+            case HAT:
+                switch(data0) {             
+                    case SDL_HAT_UP:
+                    case SDL_HAT_DOWN:
+                    case SDL_HAT_LEFT:
+                    case SDL_HAT_RIGHT:
+                    case SDL_HAT_LEFTUP:
+                    case SDL_HAT_LEFTDOWN:
+                    case SDL_HAT_RIGHTUP:
+                    case SDL_HAT_RIGHTDOWN:
+                        return data0;
+                    default:
+                        return SDL_HAT_RIGHT;
+                }
+            default:
+                ASSERT_FATAL("kind out of range when validating low");
+                break;
+        }
+    }
+
+    int validate_data1(int data1) {
+        return data1;
+    }
+
+
+    // default_something() functions return default values for *preferences* only.
+    // They are here to fill in incomplete preferences - usually the result of
+    // someone manually editing the preferences and cutting bits out.
+    //
+    // default_ASPECT(control, context) returns the default ASPECT of 'control'
+    // given 'context'.  
+    //
+    // There is no guarantee that the defaults will be sensible
+    // or interact sensibly with other pre-existing settings.
+    //
+    // Will fail if 'control' is out of range.
+
+    int default_kind(int curr_control) {
+        using namespace controls;
+        switch(curr_control) {
+            case CONTROL_UP:
+            case CONTROL_DOWN:
+            case CONTROL_LEFT:
+            case CONTROL_RIGHT:
+                return AXIS;
+            case CONTROL_ATTACK:
+            case CONTROL_JUMP:
+            case CONTROL_TONGUE:
+                return BUTTON;
+            default:
+                ASSERT_FATAL("curr_control out of range.");        
+        }
+    }
+            
+    int default_id(int curr_control, int kind) {
+        using namespace controls;
+        switch(kind) {
+            case AXIS:
+                switch(curr_control) {
+                    case CONTROL_UP:
+                    case CONTROL_DOWN:
+                        return 1;
+                    case CONTROL_LEFT:
+                    case CONTROL_RIGHT:
+                        return 0;
+                    case CONTROL_ATTACK:
+                        return 2;
+                    case CONTROL_JUMP:
+                        return 3;
+                    case CONTROL_TONGUE:
+                        return 4;
+                    default:
+                        ASSERT_FATAL("curr_control out of range.");
+                }
+                break;
+            case BUTTON:
+                switch(curr_control) {
+                    case CONTROL_UP:
+                        return 3;
+                    case CONTROL_DOWN:
+                        return 4;
+                    case CONTROL_LEFT:
+                        return 5;
+                    case CONTROL_RIGHT:
+                        return 6;
+                    case CONTROL_ATTACK:
+                        return 0;
+                    case CONTROL_JUMP:
+                        return 1;
+                    case CONTROL_TONGUE:
+                        return 2;
+                    default:
+                        ASSERT_FATAL("curr_control out of range.");
+                }
+                break;
+            case HAT:
+                switch(curr_control) {
+                    case CONTROL_UP:
+                    case CONTROL_DOWN:
+                    case CONTROL_LEFT:
+                    case CONTROL_RIGHT:
+                        return 0;
+                    case CONTROL_ATTACK:
+                    case CONTROL_JUMP:
+                    case CONTROL_TONGUE:
+                        return 1;
+                    default:
+                        ASSERT_FATAL("curr_control out of range.");
+                }
+                break;
+            default:
+                ASSERT_FATAL("kind out of range");
+        }
+    }
+
+    int default_low(int curr_control, int kind) {
+        using namespace controls;
+        switch(kind) {
+            case AXIS:
+                switch(curr_control) {
+                    case CONTROL_UP:
+                        return -large_mag;
+                    case CONTROL_DOWN:
+                        return small_mag;
+                    case CONTROL_LEFT:
+                        return -large_mag;
+                    case CONTROL_RIGHT:
+                        return small_mag;
+                    case CONTROL_ATTACK:
+                        return -large_mag;
+                    case CONTROL_JUMP:
+                        return -large_mag;
+                    case CONTROL_TONGUE:
+                        return -large_mag;
+                    default:
+                        ASSERT_FATAL("curr_control out of range.");
+                }
+                break;
+            case BUTTON:
+                return 0;
+                break;
+            case HAT:
+                switch(curr_control) {
+                    case CONTROL_UP:
+                        return SDL_HAT_UP;
+                    case CONTROL_DOWN:
+                        return SDL_HAT_DOWN;
+                    case CONTROL_LEFT:
+                        return SDL_HAT_LEFT;
+                    case CONTROL_RIGHT:
+                        return SDL_HAT_RIGHT;
+                    case CONTROL_ATTACK:
+                        return SDL_HAT_DOWN;
+                    case CONTROL_JUMP:
+                        return SDL_HAT_RIGHT;
+                    case CONTROL_TONGUE:
+                        return SDL_HAT_UP;
+                    default:
+                        ASSERT_FATAL("curr_control out of range.");
+                }
+                break;
+            default:
+                ASSERT_FATAL("kind out of range");
+        }
+    }
+
+    int default_high(int curr_control, int kind) {
+        using namespace controls;
+        switch(kind) {
+            case AXIS:
+                switch(curr_control) {
+                    case CONTROL_UP:
+                        return -small_mag;
+                    case CONTROL_DOWN:
+                        return large_mag;
+                    case CONTROL_LEFT:
+                        return -small_mag;
+                    case CONTROL_RIGHT:
+                        return large_mag;
+                    case CONTROL_ATTACK:
+                        return -small_mag;
+                    case CONTROL_JUMP:
+                        return -small_mag;
+                    case CONTROL_TONGUE:
+                        return -small_mag;
+                    default:
+                        ASSERT_FATAL("curr_control out of range.");
+                }
+                break;
+            case BUTTON:
+            case HAT:
+                return 0;
+                break;
+            default:
+                ASSERT_FATAL("kind out of range");
+        }
+    }
+
+
+    // 
+    // Singluar Interface
+    //
+    // Even though joystick_manager could be easily adapted to support multiple
+    // players, Anura doesn't presently support more than one local player.
+    // Other modules are in the habit of using joystick:: functions to access
+    // the singular joystick.  This singular interface is maintained here,
+    // passing on all the relevant calls to a joystick_manager.
+    //
+    // The only additional functionality the singular interface provides is
+    // silent mode. 
+    //
+
+    // When silence is on, all the singlular device input functions will always
+    // return false.  Direct input reading calls through player_controller and
+    // joystick_manager are unaffected, as is direct collection of SDL input
+    // events.
+    void set_silent(bool new_val) {
+        silent = new_val;
+    }
+
+    //
+    // Singluar to joystick_manager calls.  See header and joystick_manager
+    // documentation.
+    //
+
+    bool synchronise_device_list() {
+        return local_manager->synch_devices();
+    }
+
+    std::shared_ptr<std::vector<std::string>> joystick_names() {
+        return local_manager->joystick_names();
+    }
+
+    std::shared_ptr<std::vector<SDL_JoystickID>> joystick_ids() {
+        return local_manager->joystick_ids();
+    }
+
+    void change_device(int local_joystick_index) {
+        local_manager->change_device(local_joystick_index);
+    }
+
+    SDL_JoystickID current_device() {
+        return local_manager->device_id();
+    }
+
+    //
+    // Singular to player_controller calls.  See player_controller
+    // documentation.
+    //
+
+    void change_mapping(const int* kinds, const int* ids, const int* data0, const int* data1) {
+        local_joystick->change_mapping(kinds, ids, data0, data1);
+        local_joystick->set_preferences_from_configuration();
+    }
+
+    bool up() {
+        if(silent) {
+            return false;
+        } else {
+            return local_joystick->up();
+        }
+    }
+
+    bool down() {
+        if(silent) {
+            return false;
+        } else {
+            return local_joystick->down();
+        }
+    }
+
+    bool left() {
+        if(silent) {
+            return false;
+        } else {
+        return local_joystick->left();
+        }
+    }
+
+    bool right() {
+        if(silent) {
+            return false;
+        } else {
+        return local_joystick->right();
+        }
+    }
+
+    bool button(int x) {
+        if(silent) {
+            return false;
+        } else {
+            return local_joystick->button(x);
+        }
+    } 
+
+
+
+
+
+    manager::manager() {
+        local_manager = new joystick_manager();
+        local_manager->initial_setup();
+    }
+
+    manager::~manager() {
+        delete local_manager;
+        haptic::get_effects().clear();
+        haptic::haptic_devices.clear();
+
+        // We rely on our shared_ptrs to various SDL data structures having
+        // been deleted (and called the corresponding SDL_CloseThingy()
+        // function) by the time we reach this point.
+        std::cerr << "INFO: Shutting down SDL joystick, game controller and haptic modules... ";
+        SDL_QuitSubSystem(SDL_INIT_HAPTIC | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK);
+        std::cerr << " done." << std::endl;
 
 #if defined(TARGET_BLACKBERRY)
-	double x, y, z;
-	const int result = accelerometer_read_forces(&x, &y, &z);
-	if(result != BPS_SUCCESS) {
-		std::cerr << "READ OF ACCELEROMETER FAILED\n";
-		return 0;
-	} else {
-		return x*1000;
-	}
+        bps_shutdown();
+#endif
+    }
+
+    bool pump_events(const SDL_Event& ev, bool claimed) {
+        return local_manager->pump_events(ev, claimed);
+    }
+
+    // pump_events(event, already_claimed) checks the given SDL event to see if it
+    // is relevant to the joysticks we are managing.  
+    //
+    // If claimed is already true, no check is made and we return true.  Otherwise,
+    // if the event is relevant (a joystick add or remove event), the event is
+    // processed and claimed by returning true.  If checking shows the event is not
+    // relevant, the event is left unclaimed by returning false.
+    //
+    // If a joystick has been added, our joystick_manager will open it and add it
+    // to the list of available devices.
+    //
+    // If a joystick has been removed, our joystick_manager will erase it
+    // (triggering an SDL_Close()).  If the device the player is currently using is
+    // removed, the player_controller for that device will be destroyed too. 
+    bool joystick_manager::pump_events(const SDL_Event& ev, bool claimed) {
+        if(claimed) {
+            return claimed;
+        }
+       
+        // SDL generates attach and remove events for GameControllers too, but they
+        // are duplicate events on top of the joystick events SDL will generate for
+        // the underlying joysticks anyway.  So in the absence of any reason to
+        // treat GameControllers differently, we just ignore those superfluous
+        // events.
+
+        switch(ev.type) {
+            case SDL_JOYDEVICEADDED: {
+                int joy_index = ev.jdevice.which;
+                sdl_controller* new_controller = sdl_controller::open(joy_index);
+                if(!new_controller) {
+                    std::cerr << "Warning: Tried to open new joy/game controller at device INDEX " << joy_index << " ... but SDL wouldn't!" << std::endl;
+                } else {
+                    std::cerr << "INFO: Added new controller from SDL device INDEX " << joy_index << "." << std::endl;
+                    joysticks.push_back(std::shared_ptr<sdl_controller>(new_controller));
+                }
+                return true;
+            }
+
+            case SDL_JOYDEVICEREMOVED: {
+                // What a nuisance.  One of the controllers has been ripped out. Now we need to 1)
+                // rid it from the player_controller if the player was using it and 2) rid it from
+                // the joystick list.
+                SDL_JoystickID joy_id = ev.jdevice.which;
+                
+                auto iter = joysticks.begin();
+                bool did_find = false;
+                bool was_in_use = false;
+                while(iter != joysticks.end()) {
+                    if((*iter)->get_id() == joy_id) {
+                        if(local_player_controller->get_device()->get_id() == joy_id) {
+                            local_player_controller->change_device(NULL);
+                            was_in_use = true;
+                        }
+                        iter = joysticks.erase(iter);
+                        did_find = true;
+                        break;
+                    } else {
+                        iter++;
+                    }
+                }
+                if(!did_find) {
+                    std::cerr << "Warning: Tried to remove controller identified as SDL instance ID " << joy_id << ", but SDL wouldn't!" << std::endl;
+                } else {
+                    std::cerr << "INFO: Removed joy/game controller identified as ID " << joy_id << (was_in_use ? ", which was in use." : ", (not in use).") << std::endl;
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Update SDL's joystick statuses.  This will circulate input events as well.
+    void update() {
+        if(preferences::use_joystick()) {
+            SDL_JoystickUpdate();
+        }
+    }
+
+
+
+    int iphone_tilt() {
+
+#if defined(TARGET_BLACKBERRY)
+        double x, y, z;
+        const int result = accelerometer_read_forces(&x, &y, &z);
+        if(result != BPS_SUCCESS) {
+            std::cerr << "READ OF ACCELEROMETER FAILED\n";
+            return 0;
+        } else {
+            return x*1000;
+        }
 #endif
 
-	return 0;
-}
+        return 0;
+    }
 
-// XXX This appears to be unused legacy code.  Marked for deletion May 2014.
-//
-//std::vector<int> get_info() {
-//	std::vector<int> res;
-//	res.push_back(joysticks.size());
-//	for(auto j : joysticks) {
-//		//res.push_back(SDL_JoystickGetAxis(j.get(), 0));
-//		res.push_back(j->read_axis(0));
-//        //res.push_back(SDL_JoystickGetAxis(j.get(), 1));
-//        res.push_back(j->read_axis(1));
-//	}
-//	
-//	return res;
-//}
 
 }
 
