@@ -59,9 +59,11 @@ namespace joystick {
         class sdl_game_controller;
 
     class controller_signal;
-        class axis_signal;
-        class button_signal;
-        class hat_signal;
+        class union_signal;
+        class real_controller_signal;
+            class axis_signal;
+            class button_signal;
+            class hat_signal;
 
     class player_controller;
 
@@ -253,7 +255,7 @@ namespace joystick {
                     std::cerr << "Warning: Failed to open SDL_GameController underlying joystick at device at index " << device_id << "." << std::endl;
                     return NULL;
                 } else {
-                    std::cerr << "Opened device at index " << device_id << " as sdl_game_controller." << std::endl;
+                    std::cerr << "INFO: Opened device at index " << device_id << " as sdl_game_controller." << std::endl;
                     return new sdl_game_controller(gc, jc);
                 }
             }
@@ -263,24 +265,81 @@ namespace joystick {
                 std::cerr << "Warning: Failed to open SDL_Joystick device at index " << device_id << "." << std::endl;
                 return NULL;
             } else {
-                std::cerr << "Opened device at index " << device_id << " as sdl_joy_controller." << std::endl;
+                std::cerr << "INFO: Opened device at index " << device_id << " as sdl_joy_controller." << std::endl;
                 return new sdl_joy_controller(jc);
             }
         }
     }
 
-
-    class controller_signal {
+    
+    class controller_signal : public std::enable_shared_from_this<controller_signal> {
         // We use a map from joystick/gamepad actions to in-game control
         // actions so that players can customise their controls.
         //
-        // A controller_signal identifies a single button being pressed (or a
-        // single axis being moved one way) on a particular joystick/gamepad.
+        // A controller_signal identifies a physical action, such as Button 3
+        // being pressed on pad 24, for example, and can determine if that
+        // action is happening (firing) now.  
+        
+        public:
+
+            // is_firing() checks whether SDL thinks the player is currently
+            // pressing this control the way we are looking for.
+            virtual bool is_firing() = 0;
+            
+            // cs.realise() returns cs if cs is a real_controller_signal,
+            // otherwise it returns real_controller_signal that is a good
+            // subjective approximation.  (This is a bit of an ugly hack for
+            // when we want to remove the complexity of layered
+            // controller_signals.)  Caller shares ownership.
+            virtual std::shared_ptr<real_controller_signal> realise() = 0;
+           
+            virtual ~controller_signal() {}
+    };
+
+
+    class union_signal : public controller_signal {
+        // union_signal is used when we want two or more physical actions (like
+        // pushing up on the left stick and pushing up on the right stick) to
+        // map be read as a single signal (just up).  You can use unions of
+        // unions.
+
+        protected:
+            std::shared_ptr<controller_signal> primary;
+            std::shared_ptr<controller_signal> secondary;
+
+        public:
+            static std::shared_ptr<union_signal> make(std::shared_ptr<controller_signal> primary_in, std::shared_ptr<controller_signal> secondary_in) {
+                union_signal* ret = new union_signal();
+                ret->primary = primary_in;
+                ret->secondary = secondary_in;
+                return std::shared_ptr<union_signal>(ret);
+            }
+
+            bool is_firing() override {
+                return primary->is_firing() || secondary->is_firing();
+            }
+
+            // What if we want to turn this into just one
+            // real_controller_signal?  This union will form a tree whose
+            // leaves are all real_controller_signals, so we just pick the left
+            // most leaf.
+            virtual std::shared_ptr<real_controller_signal> realise() override {
+                return primary->realise();
+            }
+    };
+
+
+    class real_controller_signal : public controller_signal {
+        // A real_controller_signal identifies a single button being pressed (or a
+        // single axis being moved one way etc) on a particular joystick/gamepad.
         // Button 3 being pressed on pad 24, for example.  
         //
-        // controller_signal has 3 exhaustive and exclusive subclasses,
+        // real_controller_signal has 3 exhaustive and exclusive subclasses,
         // axis_signal, button_signal and hat_signal whose types are manually
         // tracked as part_kinds AXIS, BUTTON, and HAT.
+        //
+        // real_controller_signals can be encoded and stored with the
+        // preferences:: module. 
         
         protected:
             // The SDL component id of this component on the controller.
@@ -312,10 +371,6 @@ namespace joystick {
                return 0;
             } 
 
-            // is_firing() checks whether SDL thinks the player is currently
-            // pressing this control the way we are looking for.
-            virtual bool is_firing() = 0;
-           
             // Human readable kind name. 
             const std::string get_kind_name() {
                 return kind_names[get_kind()];
@@ -326,6 +381,13 @@ namespace joystick {
             std::shared_ptr<sdl_controller> get_device() {
                 return device;
             }
+
+            // realise() doesn't need to do anything to turn this object into a
+            // real_controller_signal, we can just return it directly. 
+            virtual std::shared_ptr<real_controller_signal> realise() {
+                return std::static_pointer_cast<real_controller_signal>(shared_from_this());
+                // That's "return this;" with shared_ptrs in C++11.
+            }
             
             // Creates a controller signal using the given joystick 'device',
             // representing the button or axis identified by 'part_id'
@@ -334,18 +396,17 @@ namespace joystick {
             // axis).  Whether the component is an axis/button/hat is denoted
             // by 'part_type'.  The caller takes ownership. May return NULL
             // if input is out of range etc.
-            static std::shared_ptr<controller_signal> make_signal(
+            static std::shared_ptr<controller_signal> make(
                     std::shared_ptr<sdl_controller> device, part_kind part_type, int part_id, int low, int high);
 
-            virtual ~controller_signal() {}
+            virtual ~real_controller_signal() {}
     };
 
-
-    const char* controller_signal::kind_names[] = { "axis", "button", "hat" };
+    const char* real_controller_signal::kind_names[] = { "axis", "button", "hat" };
 
     
     
-    class axis_signal : public controller_signal {
+    class axis_signal : public real_controller_signal {
 
         // axis_signal models a joy axis being pressed in one particular
         // direction.  For example, a left-right axis being pushed left.
@@ -396,7 +457,7 @@ namespace joystick {
     };
 
 
-    class button_signal : public controller_signal {
+    class button_signal : public real_controller_signal {
         // button_signal models a controller button being pressed.  
         
         public:
@@ -416,7 +477,7 @@ namespace joystick {
     };
 
 
-    class hat_signal : public controller_signal {
+    class hat_signal : public real_controller_signal {
         // hat_signal models a controller hat being pressed.  
         //
         // What SDL and the driver call a hat is often a d-pad.  Players and
@@ -528,7 +589,7 @@ namespace joystick {
 
 
 
-    std::shared_ptr<controller_signal> controller_signal::make_signal(
+    std::shared_ptr<controller_signal> real_controller_signal::make(
         std::shared_ptr<sdl_controller> device, part_kind kind, int part_id, int data0, int data1) {
 
         switch(kind) {
@@ -584,7 +645,7 @@ namespace joystick {
     //     controller (used in what way) corresponds to that control.  The
     //     general form is joystick_[ANURA_CONTROL]_part_[ASPECT].
     //
-    //     The kinds are the part_kinds {AXIS, BUTTON, HAT} cast as ints.  
+    //     The kinds are the part_kinds {AXIS, BUTTON, HAT} cast as ints.
     //
     //     The ids are SDL joystick part IDs in the range 0 to 255.
     //     
@@ -605,6 +666,14 @@ namespace joystick {
     // With the exception of use_joystick, all other settings are only ever
     // written back into the preferences:: module when the user configures
     // their own joystick on the configure screen.
+    //
+    // Note 1: There is a UNION controller_signal, but to keep things simple it
+    // cannot be encoded in the preferences file.  The motivation for having
+    // the union_signal is to allow Anura to second guess what the user wants
+    // to press - letting them use several axes for up and down for example.
+    // But if we are storing custom preferences, we know exactly which
+    // axis/button/hat the user wants to use, so there is no pressing need to
+    // second guess.  
     
 
     class player_controller {
@@ -619,33 +688,30 @@ namespace joystick {
             // Our map from Anura controls (controls::CONTROL_JUMP) to device input (button 21 on joystick 3).
             // When in use this vector should always have controls::NUM_CONTROLS elements.
             std::vector<std::shared_ptr<controller_signal>> signal_map;
-        
+
         public:
             player_controller() {
-                empty();
-            }
-
-            // Clear device and the contents of the map.
-            void empty() {
                 device = NULL;
                 signal_map.clear();
             }
 
+            // get_device() shares ownership of the returned device.
             std::shared_ptr<sdl_controller> get_device() {
                 return device;
             }
 
-            // Fill in signal_map with controller_signals created from the user
+            // Overwrites signal_map with controller_signals created from the user
             // preferences file.  If no sdl_controller is in use, no map is
             // created.
-            void configure_from_preferences(std::shared_ptr<sdl_controller> new_device) {
-                device = new_device;
+            void configure_from_preferences() {
                 if(device == NULL) {
                     return;
                 }
+                std::cerr << "INFO: Using configuration loaded from preferences::." << std::endl;
+                signal_map.clear();
                 for(int c = 0; c < controls::NUM_CONTROLS; c++) {
                     signal_map.push_back(
-                        controller_signal::make_signal(device, (part_kind) preferences::joy_part_kind(c), 
+                        real_controller_signal::make(device, (part_kind) preferences::joy_part_kind(c), 
                             preferences::joy_part_id(c), preferences::joy_part_data0(c), preferences::joy_part_data1(c))
                     ); 
                 }
@@ -662,10 +728,10 @@ namespace joystick {
                 preferences::set_joystick_guid(device->get_guid());
                 preferences::set_joystick_name(device->get_name());
                 for(int c = 0; c < controls::NUM_CONTROLS; c++) {
-                    preferences::set_joy_part_kind(c, signal_map[c]->get_kind());
-                    preferences::set_joy_part_id(c, signal_map[c]->get_id());
-                    preferences::set_joy_part_data0(c, signal_map[c]->get_data0());
-                    preferences::set_joy_part_data1(c, signal_map[c]->get_data1());
+                    preferences::set_joy_part_kind(c, signal_map[c]->realise()->get_kind());
+                    preferences::set_joy_part_id(c, signal_map[c]->realise()->get_id());
+                    preferences::set_joy_part_data0(c, signal_map[c]->realise()->get_data0());
+                    preferences::set_joy_part_data1(c, signal_map[c]->realise()->get_data1());
                 }
             }
 
@@ -677,32 +743,18 @@ namespace joystick {
             // settings will be used.  Otherwise a default configure_blind()
             // mapping is used.
             void change_device(std::shared_ptr<sdl_controller> new_device) {
-                empty();
                 device = new_device;
                 if(device != NULL) {
+                    std::cerr << "INFO: Now using controller " << device->get_name() << " [" << device->get_guid() << "]." << std::endl;
+                    preferences::set_use_joystick(true);
                     if(device->get_guid() == preferences::joystick_guid()) {
-                        std::cerr << "INFO: Now using controller " << device->get_name() 
-                                  << " [" << device->get_guid() << "], configured from preferences::."
-                                  << std::endl;
-                        for(int c = 0; c < controls::NUM_CONTROLS; c++) {
-                            signal_map.push_back(
-                                    controller_signal::make_signal(
-                                        device,
-                                        (part_kind) preferences::joy_part_kind(c), 
-                                        preferences::joy_part_id(c), 
-                                        preferences::joy_part_data0(c), 
-                                        preferences::joy_part_data1(c)
-                                    )
-                            ); 
-                        }
+                        configure_from_preferences();
                     } else {
-                        std::cerr << "INFO: Now using controller " << device->get_name() 
-                                  << " [" << device->get_guid() << "] with default configuration." 
-                                  << std::endl;
                         configure_blind();
                     }
                 } else {
                     std::cerr << "INFO: Now using NO controller." << std::endl;
+                    preferences::set_use_joystick(false);
                 }
             }
 
@@ -714,49 +766,93 @@ namespace joystick {
                 if(device == NULL) {
                     return;
                 }
+                std::cerr << "INFO: Using altered controller configuration." << std::endl;
                 signal_map.clear();
                 for(int c = 0; c < controls::NUM_CONTROLS; c++) {
                     signal_map.push_back(
-                            controller_signal::make_signal(device, (part_kind) part_kinds[c], part_ids[c], part_data0[c], part_data1[c])
+                            real_controller_signal::make(device, (part_kind) part_kinds[c], part_ids[c], part_data0[c], part_data1[c])
                     );
                 }
             }
 
-            // Creates a simple default mapping for the current device.
+            // Creates a default mapping for the current device.
             //
             // If no device is in use, this function will do nothing.
             // 
             // The various device->prefer_() functions are used to guess what an approriate setup might be.
             void configure_blind() {
+
                 if(device == NULL) {
                     return;
                 }
+               
+                signal_map.clear();
+                 
+                // Case one:  we are using a virtual XBox360 controller that SDL_GameController has set up.
+                // We can be pretty confident here about the layout of the actual device.
                 if(device->prefer_sdl_gc_setup()) {
-                    signal_map.push_back(controller_signal::make_signal(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_UP, 0, 0)); 
-                    signal_map.push_back(controller_signal::make_signal(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_DOWN, 0, 0)); 
-                    signal_map.push_back(controller_signal::make_signal(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_LEFT, 0, 0)); 
-                    signal_map.push_back(controller_signal::make_signal(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_RIGHT, 0, 0)); 
-                    signal_map.push_back(controller_signal::make_signal(device, BUTTON, SDL_CONTROLLER_BUTTON_A, 0, 0)); 
-                    signal_map.push_back(controller_signal::make_signal(device, BUTTON, SDL_CONTROLLER_BUTTON_B, 0, 0)); 
-                    signal_map.push_back(controller_signal::make_signal(device, BUTTON, SDL_CONTROLLER_BUTTON_Y, 0, 0)); 
+                    std::cerr << "INFO: Using default configuration style sdl_gc_setup." << std::endl;
+                    signal_map.push_back(
+                            union_signal::make(
+                                real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_UP, 0, 0),
+                                union_signal::make(
+                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTY, -large_mag, -small_mag),
+                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTY, -large_mag, -small_mag)
+                                )
+                            )
+                    ); 
+                    signal_map.push_back(
+                            union_signal::make(
+                                real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_DOWN, 0, 0),
+                                union_signal::make(
+                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTY, small_mag, large_mag),
+                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTY, small_mag, large_mag)
+                                )
+                            )
+                    ); 
+                    signal_map.push_back(
+                            union_signal::make(
+                                real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_LEFT, 0, 0),
+                                union_signal::make(
+                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTX, -large_mag, -small_mag),
+                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTX, -large_mag, -small_mag)
+                                )
+                            )
+                    ); 
+                    signal_map.push_back(
+                            union_signal::make(
+                                real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_RIGHT, 0, 0),
+                                union_signal::make(
+                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTX, small_mag, large_mag),
+                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTX, small_mag, large_mag)
+                                )
+                            )
+                    );
+                    signal_map.push_back(real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_A, 0, 0)); 
+                    signal_map.push_back(real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_B, 0, 0)); 
+                    signal_map.push_back(real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_Y, 0, 0)); 
 
+                // Case two:  we've got something with a hat, which is probably a d-pad.  
                 } else if(device->prefer_hatty_setup()) {
-                    signal_map.push_back(controller_signal::make_signal(device, HAT, 0, SDL_HAT_UP, 0)); 
-                    signal_map.push_back(controller_signal::make_signal(device, HAT, 0, SDL_HAT_DOWN, 0)); 
-                    signal_map.push_back(controller_signal::make_signal(device, HAT, 0, SDL_HAT_LEFT, 0)); 
-                    signal_map.push_back(controller_signal::make_signal(device, HAT, 0, SDL_HAT_RIGHT, 0)); 
-                    signal_map.push_back(controller_signal::make_signal(device, BUTTON, 0, 0, 0)); 
-                    signal_map.push_back(controller_signal::make_signal(device, BUTTON, 1, 0, 0)); 
-                    signal_map.push_back(controller_signal::make_signal(device, BUTTON, 3, 0, 0)); 
+                    std::cerr << "INFO: Using default configuration style hatty_setup." << std::endl;
+                    signal_map.push_back(real_controller_signal::make(device, HAT, 0, SDL_HAT_UP, 0)); 
+                    signal_map.push_back(real_controller_signal::make(device, HAT, 0, SDL_HAT_DOWN, 0)); 
+                    signal_map.push_back(real_controller_signal::make(device, HAT, 0, SDL_HAT_LEFT, 0));
+                    signal_map.push_back(real_controller_signal::make(device, HAT, 0, SDL_HAT_RIGHT, 0));
+                    signal_map.push_back(real_controller_signal::make(device, BUTTON, 0, 0, 0)); 
+                    signal_map.push_back(real_controller_signal::make(device, BUTTON, 1, 0, 0)); 
+                    signal_map.push_back(real_controller_signal::make(device, BUTTON, 2, 0, 0)); 
 
+                // Case three: there's no hat, so the main stick or d-pad is probably on the first two axes.    
                 } else { // device->prefer_axial_setup() or nothing
-                    signal_map.push_back(controller_signal::make_signal(device, AXIS, 1, -large_mag, -small_mag)); 
-                    signal_map.push_back(controller_signal::make_signal(device, AXIS, 1, small_mag, large_mag)); 
-                    signal_map.push_back(controller_signal::make_signal(device, AXIS, 0, -large_mag, -small_mag)); 
-                    signal_map.push_back(controller_signal::make_signal(device, AXIS, 0, small_mag, large_mag)); 
-                    signal_map.push_back(controller_signal::make_signal(device, BUTTON, 0, 0, 0)); 
-                    signal_map.push_back(controller_signal::make_signal(device, BUTTON, 1, 0, 0)); 
-                    signal_map.push_back(controller_signal::make_signal(device, BUTTON, 2, 0, 0)); 
+                    std::cerr << "INFO: Using default configuration style axial_setup." << std::endl;
+                    signal_map.push_back(real_controller_signal::make(device, AXIS, 1, -large_mag, -small_mag));
+                    signal_map.push_back(real_controller_signal::make(device, AXIS, 1, small_mag, large_mag)); 
+                    signal_map.push_back(real_controller_signal::make(device, AXIS, 0, -large_mag, -small_mag));
+                    signal_map.push_back(real_controller_signal::make(device, AXIS, 0, small_mag, large_mag));
+                    signal_map.push_back(real_controller_signal::make(device, BUTTON, 0, 0, 0)); 
+                    signal_map.push_back(real_controller_signal::make(device, BUTTON, 1, 0, 0)); 
+                    signal_map.push_back(real_controller_signal::make(device, BUTTON, 2, 0, 0)); 
                 }
             }
 
@@ -1054,22 +1150,25 @@ namespace joystick {
         // Make the player_controller that links our hardware controls to in-game controls 
         local_player_controller = std::make_shared<player_controller>();
 
-        // See if the joystick saved in preferences is connected now.  If not, we'll settle for the
-        // first available stick, if there is one.
-        std::shared_ptr<sdl_controller> chosen_stick = NULL;
-        if(preferences::joystick_guid().length() > 0) { // empty string indicates that we have no particular saved preferences
-            for(auto curr_stick : joysticks) {
-                if(curr_stick->get_guid() == preferences::joystick_guid()) {
-                    chosen_stick = curr_stick;
-                    break;
+        // If joysticks are on in preferences::, then choose one to use.
+        if(preferences::use_joystick()) {
+            // See if the joystick saved in preferences is connected now.  If not, we'll settle for the
+            // first available stick, if there is one.
+            std::shared_ptr<sdl_controller> chosen_stick = NULL;
+            if(preferences::joystick_guid().length() > 0) { // empty string indicates that we have no particular saved preferences
+                for(auto curr_stick : joysticks) {
+                    if(curr_stick->get_guid() == preferences::joystick_guid()) {
+                        chosen_stick = curr_stick;
+                        break;
+                    }
                 }
             }
-        }
 
-        if(chosen_stick != NULL) {
-            local_player_controller->change_device(chosen_stick);
-        } else if(joysticks.size() > 0) {
-            local_player_controller->change_device(joysticks[0]);
+            if(chosen_stick != NULL) {
+                local_player_controller->change_device(chosen_stick);
+            } else if(joysticks.size() > 0) {
+                local_player_controller->change_device(joysticks[0]);
+            }
         }
 
         // Hacky way to link in to the singular interface.
@@ -1483,7 +1582,8 @@ namespace joystick {
                 bool was_in_use = false;
                 while(iter != joysticks.end()) {
                     if((*iter)->get_id() == joy_id) {
-                        if(local_player_controller->get_device()->get_id() == joy_id) {
+                        std::shared_ptr<sdl_controller> device_in_use_now = local_player_controller->get_device();
+                        if(device_in_use_now != NULL && device_in_use_now->get_id() == joy_id) {
                             local_player_controller->change_device(NULL);
                             was_in_use = true;
                         }
