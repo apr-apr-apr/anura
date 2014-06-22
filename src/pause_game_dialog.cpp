@@ -219,16 +219,6 @@ PAUSE_GAME_RESULT show_pause_game_dialog()
 	d.set_upscale_frame(upscale_dialog_frame);
 
 	d.set_draw_background_fn(do_draw_scene);
-//<<<<<<< HEAD
-//	
-//	widget_ptr b1(new button(resume_label, boost::bind(end_dialog, &d, &result, PAUSE_GAME_CONTINUE), BUTTON_STYLE_NORMAL, button_resolution));
-//	widget_ptr b2(new button(controls_label, show_controller_select_dialog, BUTTON_STYLE_NORMAL, button_resolution));
-//	widget_ptr language_button(new button(language_label, show_language_dialog, BUTTON_STYLE_NORMAL, button_resolution));
-//	widget_ptr b3(new button(return_label, boost::bind(end_dialog, &d, &result, PAUSE_GAME_GO_TO_TITLESCREEN), BUTTON_STYLE_NORMAL, button_resolution));
-//	widget_ptr b4(new button(exit_label, boost::bind(end_dialog, &d, &result, PAUSE_GAME_QUIT), BUTTON_STYLE_DEFAULT, button_resolution));
-//	widget_ptr b5(new checkbox(button_swap_label, preferences::reverse_ab(), boost::bind(preferences::set_reverse_ab, _1), button_resolution));
-//	widget_ptr b_video(new button(video_select_label, show_video_selection_dialog, BUTTON_STYLE_NORMAL, button_resolution));
-//=======
 
 	button_ptr b1(new button(resume_label, boost::bind(end_dialog, &d, &result, PAUSE_GAME_CONTINUE), BUTTON_STYLE_NORMAL, button_resolution));
 	button_ptr b2(new button(controls_label, show_controller_select_dialog, BUTTON_STYLE_NORMAL, button_resolution));
@@ -238,8 +228,6 @@ PAUSE_GAME_RESULT show_pause_game_dialog()
 	button_ptr b5(new checkbox(button_swap_label, preferences::reverse_ab(), boost::bind(preferences::set_reverse_ab, _1), button_resolution));
 	button_ptr b_video(new button(video_select_label, show_video_selection_dialog, BUTTON_STYLE_NORMAL, button_resolution));
 
-//>>>>>>> upstream/master
-	
 	b1->set_dim(button_width, button_height);
 	b2->set_dim(button_width, button_height);
 	b3->set_dim(button_width, button_height);

@@ -1153,7 +1153,9 @@ namespace joystick {
         // If joysticks are on in preferences::, then choose one to use.
         if(preferences::use_joystick()) {
             // See if the joystick saved in preferences is connected now.  If not, we'll settle for the
-            // first available stick, if there is one.
+            // first available stick, if there is one.  If there are no sticks, we'll turn joysticks
+            // off in preferences::.  Will probably want to decouple preferences use_joystick() by
+            // using device != NULL or device_id != no_device in future.
             std::shared_ptr<sdl_controller> chosen_stick = NULL;
             if(preferences::joystick_guid().length() > 0) { // empty string indicates that we have no particular saved preferences
                 for(auto curr_stick : joysticks) {
@@ -1168,6 +1170,8 @@ namespace joystick {
                 local_player_controller->change_device(chosen_stick);
             } else if(joysticks.size() > 0) {
                 local_player_controller->change_device(joysticks[0]);
+            } else {
+                preferences::set_use_joystick(false);
             }
         }
 
