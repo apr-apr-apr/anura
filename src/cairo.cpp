@@ -7,6 +7,8 @@
 #include <ft2build.h>
 #include FT_FREETYPE_H
 
+#include "svg/svg_parse.hpp"
+
 #include "asserts.hpp"
 #include "fbo_scene.hpp"
 #include "cairo.hpp"
@@ -60,19 +62,11 @@ cairo_surface_t* get_cairo_image(const std::string& image)
 	return result;
 }
 
-bool initialize_gtype() {
-#if !GLIB_CHECK_VERSION(2,36,0)
-	g_type_init();
-#endif
-	return true;
-}
 }
 
 cairo_context::cairo_context(int w, int h)
   : width_(w), height_(h), temp_pattern_(NULL)
 {
-	static const bool init = initialize_gtype();
-
 	surface_ = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
 	cairo_ = cairo_create(surface_);
 
@@ -107,10 +101,18 @@ surface cairo_context::get_surface() const
 	memcpy(result->pixels, data, width_*height_*4);
 	unsigned char* dst = reinterpret_cast<unsigned char*>(result->pixels);
 
+	//cairo uses pre-multiplied alpha while GL uses non-multiplied, so
+	//correct that here. The channels also have to be reordered.
 	for(int i = 0; i != width_*height_; ++i) {
-		dst[0] = data[2];
-		dst[1] = data[1];
-		dst[2] = data[0];
+		if(data[3] != 0 && data[3] != 255) {
+			dst[0] = std::min<int>(255, (data[2]*255)/data[3]);
+			dst[1] = std::min<int>(255, (data[1]*255)/data[3]);
+			dst[2] = std::min<int>(255, (data[0]*255)/data[3]);
+		} else {
+			dst[0] = data[2];
+			dst[1] = data[1];
+			dst[2] = data[0];
+		}
 		dst[3] = data[3];
 		data += 4;
 		dst += 4;
@@ -128,31 +130,27 @@ graphics::texture cairo_context::write() const
 
 void cairo_context::render_svg(const std::string& fname)
 {
-		{
-	cairo_status_t status = cairo_status(cairo_);
-	ASSERT_LOG(status == 0, "SVG rendering error rendering " << fname << ": " << cairo_status_to_string(status));
-		}
+	{
+		cairo_status_t status = cairo_status(cairo_);
+		ASSERT_LOG(status == 0, "SVG rendering error rendering " << fname << ": " << cairo_status_to_string(status));
+	}
 
-	GError *error = NULL;
-
-	static std::map<std::string, RsvgHandle*> cache;
-
-	RsvgHandle* handle = NULL;
+	std::shared_ptr<KRE::SVG::parse> handle;
+	static std::map<std::string, std::shared_ptr<KRE::SVG::parse>> cache;
 
 	auto itor = cache.find(fname);
 	if(itor == cache.end()) {
 		std::string real_fname = module::map_file(fname);
 		ASSERT_LOG(sys::file_exists(real_fname), "Could not find svg file: " << fname);
 
-		handle = rsvg_handle_new_from_file(real_fname.c_str(), &error);
-		ASSERT_LOG(error == NULL, "SVG rendering error: " << error->message);
-
+		handle = std::shared_ptr<KRE::SVG::parse>(new KRE::SVG::parse(real_fname));		
 		cache[fname] = handle;
 	} else {
 		handle = itor->second;
 	}
 
-	rsvg_handle_render_cairo(handle, cairo_);
+	KRE::SVG::render_context ctx(cairo_, width_, height_);
+	handle->render(ctx);
 
 	cairo_status_t status = cairo_status(cairo_);
 	ASSERT_LOG(status == 0, "SVG rendering error rendering " << fname << ": " << cairo_status_to_string(status));
@@ -396,8 +394,6 @@ BEGIN_CAIRO_FN(set_linear_pattern, "(decimal, decimal, decimal, decimal, [{offse
 		if(a.is_numeric()) {
 			alpha = a.as_decimal().as_float();
 		}
-
-		std::cerr << "ZZZ: SET ALPHA: " << alpha << "\n";
 
 		cairo_pattern_add_color_stop_rgba(pattern,
 		  v["offset"].as_decimal().as_float(),
@@ -686,6 +682,63 @@ BEGIN_CAIRO_FN(paint_image, "(string, [decimal,decimal]|null=null)")
 
 	cairo_status_t status = cairo_status(context.get());
 	ASSERT_LOG(status == 0, "SVG rendering error painting " << args[0].as_string() << ": " << cairo_status_to_string(status));
+END_CAIRO_FN
+
+BEGIN_CAIRO_FN(push_group, "()")
+	cairo_push_group(context.get());
+END_CAIRO_FN
+
+BEGIN_CAIRO_FN(pop_group_to_source, "()")
+	cairo_pop_group_to_source(context.get());
+END_CAIRO_FN
+
+BEGIN_CAIRO_FN(paint, "()")
+	cairo_paint(context.get());
+END_CAIRO_FN
+
+BEGIN_CAIRO_FN(set_operator, "(string)")
+	std::string arg = args[0].as_string();
+	cairo_operator_t op = CAIRO_OPERATOR_CLEAR;
+	bool found = false;
+#define OP_STR(s) } else if(arg == #s) { op = CAIRO_OPERATOR_##s; found = true;
+
+	if(false) {
+	OP_STR(CLEAR)
+	OP_STR(SOURCE)
+	OP_STR(OVER)
+	OP_STR(IN)
+	OP_STR(OUT)
+	OP_STR(ATOP)
+	OP_STR(DEST)
+	OP_STR(DEST_OVER)
+	OP_STR(DEST_IN)
+	OP_STR(DEST_OUT)
+	OP_STR(DEST_ATOP)
+	OP_STR(XOR)
+	OP_STR(ADD)
+	OP_STR(SATURATE)
+	OP_STR(MULTIPLY)
+	OP_STR(SCREEN)
+	OP_STR(OVERLAY)
+	OP_STR(DARKEN)
+	OP_STR(DARKEN)
+	OP_STR(LIGHTEN)
+	OP_STR(COLOR_DODGE)
+	OP_STR(COLOR_BURN)
+	OP_STR(HARD_LIGHT)
+	OP_STR(SOFT_LIGHT)
+	OP_STR(DIFFERENCE)
+	OP_STR(EXCLUSION)
+	OP_STR(HSL_HUE)
+	OP_STR(HSL_SATURATION)
+	OP_STR(HSL_COLOR)
+	OP_STR(HSL_LUMINOSITY)
+	}
+
+	ASSERT_LOG(found, "Illegal draw operator: " << arg);
+
+	cairo_set_operator(context.get(), op);
+
 END_CAIRO_FN
 
 BEGIN_DEFINE_FN(image_dim, "(string) ->[int,int]")

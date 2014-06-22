@@ -1154,6 +1154,7 @@ bool level_runner::play_cycle()
 			if(player && portal->saved_game == false) {
 				if(portal->new_playable) {
 					player = portal->new_playable->get_player_info();
+					ASSERT_LOG(player != NULL, "Object is not playable: " << portal->new_playable->debug_description().c_str());
 				}
 				player->get_entity().set_pos(dest);
 				new_level->add_player(&player->get_entity());
@@ -1495,9 +1496,19 @@ bool level_runner::play_cycle()
 				break;
 			}
 		}
+
+		if(should_pause) {
+			lvl_->set_show_builtin_settings_dialog(true);
+			std::vector<entity_ptr> active_chars = lvl_->get_active_chars();
+			for(const auto& c : active_chars) {
+				c->handle_event(OBJECT_EVENT_SETTINGS_MENU);
+			}
+		}
 		
-		if (should_pause)
+		if(lvl_->show_builtin_settings_dialog())
 		{
+			lvl_->set_show_builtin_settings_dialog(false);
+
 #if defined(USE_ISOMAP)
 			if(mouselook_state) {
 				SDL_SetRelativeMouseMode(SDL_FALSE);
