@@ -143,7 +143,7 @@ namespace {
                 tick = 0;
                 finger_tick = 0;
                 start_new_state(welcome);
-                target_device = joystick::current_device();
+                target_device = joystick::current_device_id();
             }
 
                 // Sends the controller mapping we have accumulated to the joystick:: module. 
@@ -153,6 +153,7 @@ namespace {
                     return;
                 }
                 joystick::change_mapping(part_kinds, part_ids, part_data0, part_data1);
+                joystick::set_joystick_configuration_preferences();
             }
 
                 // Backtracks to the previous in-game control (in case you make

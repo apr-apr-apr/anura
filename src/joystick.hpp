@@ -23,8 +23,13 @@
 
 namespace joystick {
 
-    // Wrapper class responsible for initialising and shutting down joystick
-    // module.  Retained as interim measure.  Should subsume joystick_manager.
+    //
+    // Initialisation
+    //
+
+    // manager is a wrapper class that initialises and shuts down the joystick
+    // module.  Retained as an interim measure.  Should subsume
+    // joystick_manager.
     struct manager {
         // Initialise and run joystick module.
         manager();
@@ -32,11 +37,15 @@ namespace joystick {
         ~manager();
     };
     
-    // Input reading fuctions. All return true if the relevant button / stick
-    // is currently pressed in the right direction, or false otherwise.
-    // Silently return false if the joystick is off in preferences, a NULL
-    // device is is use as the joystick or silent mode is on.  Buttons 0, 1 and
-    // 2 correspond to CONTROL_ATTACK, CONTROL_JUMP and CONTROL_TONGUE
+
+    //
+    // Input reading fuctions 
+    //
+
+    // All return true if the relevant button / stick is currently pressed in
+    // the right direction, or false otherwise.  Silently return false if the
+    // no joystick device is in use, or silent mode is on.  Buttons 0, 1 and 2
+    // correspond to CONTROL_ATTACK, CONTROL_JUMP and CONTROL_TONGUE
     // respectively.  Out of range buttons return false always.
     bool up();
     bool down();
@@ -44,6 +53,11 @@ namespace joystick {
     bool right();
     bool button(int n);
     
+    // When silent mode is on/true, up(), down(), left() right() and button()
+    // always return false, regardless of whether the controls are actually
+    // being pressed.
+    void set_silent(bool on);
+
     int iphone_tilt();
     
     // Read input from hardware and update SDL data structures.
@@ -52,18 +66,32 @@ namespace joystick {
     // Respond to SDL joystick attach and joystick remove events.
     bool pump_events(const SDL_Event&,bool);
 
+
+    //
+    // Preference setting functions
+    //
+
+    // Writes the current device selection to the preferences:: module.
+    // Potentially sets use_joystick, chosen_joystick_guid and
+    // chosen_joystick_name.
+    void set_joystick_selection_preferences();
+   
+    // Writes the configuration of the current device to the preferences::
+    // module.  Sets all of the inner joystick-configuration preferences.
+    void set_joystick_configuration_preferences();
+
+
+    //
+    // For creating joystick-select and joystick-configure screens  
+    //
+    
     // Update device lists to reflect the controllers currently plugged into
     // the system.  Should be called promptly after update() (or an SDL event
     // queue poll) to ensure that SDL itself is in synch.  Returns true if
     // this function had to change the list, false otherwise.
     bool synchronise_device_list();
     
-    // Return the id of the controller currently being used in-game.
-    // Return no_device if none exists.
-    SDL_JoystickID current_device();
-    const static int no_device = -1;
-
-    // Device lists.  Elements at index k correspond to device k.
+    // Device lists.  Elements at position k correspond to device k.
     // joystick_names() gives a human readable name, joystick_ids() gives an
     // SDL device instance id.  Use synchronise_device_list to ensure the lists
     // are up to date, or else ensure that pump_events captures *every*
@@ -72,14 +100,25 @@ namespace joystick {
     std::shared_ptr<std::vector<std::string>> joystick_names();
     std::shared_ptr<std::vector<SDL_JoystickID>> joystick_ids();
     
-    // Change the controller used by the player in-game to the device at index
-    // local_joystick_index. 
-    void change_device(int local_joystick_index);
-   
-    // Change the button-to-in-game-control configuration of the controller
-    // currently in use.
-    void change_mapping(const int* part_kinds, const int* part_ids, const int* part_data0, const int* part_data1);
+    // Return the id of the controller currently being used in-game.
+    // Return no_id if none exists.
+    SDL_JoystickID current_device_id();
+    const static SDL_JoystickID no_id = -1;
+
+    // Change the controller used by the player in-game to the device at  
+    // device_position.  Positions correspond to the device lists described
+    // above.  Use change_device(no_device) to select no joystick.
+    void change_device(int device_position);
+    const static int no_device = -2;         // -2 to avoid conflating with no_id
     
+    // Change the configuration of the controller currently in use.
+    void change_mapping(const int* part_kinds, const int* part_ids, const int* part_data0, const int* part_data1);
+
+    
+    //
+    // Encodings for joystick components / signals / mappings
+    //
+
     // Component types on a joystick.
     enum part_kind {
         AXIS,
@@ -109,11 +148,6 @@ namespace joystick {
     int validate_id(int candidate_id);
     int validate_data0(int candidate_low, int validated_kind); 
     int validate_data1(int candidate_data1);
-
-    // When silent mode is on/true, up(), down(), left() right() and button()
-    // always return false, regardless of whether the controls are actually
-    // being pressed.
-    void set_silent(bool on);
 
 }
 

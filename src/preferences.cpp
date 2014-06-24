@@ -376,11 +376,15 @@ namespace preferences {
 		bool internal_tbs_server_ = false;
 
 		std::string locale_;
-	
+
+        // Last chosen joystick
+        std::string chosen_joystick_guid_;
+        std::string chosen_joystick_name_;
+
         // Custom joystick configuration, refer to documentation in
         // joystick.cpp
-        std::string joystick_guid_;
-        std::string joystick_name_;
+        std::string configured_joystick_guid_;
+        std::string configured_joystick_name_;
         
         int joy_part_kind_[controls::NUM_CONTROLS];
         int joy_part_id_[controls::NUM_CONTROLS];
@@ -892,23 +896,39 @@ namespace preferences {
 		password_ = str.str();
 	}
 
+    // Last chosen joystick name and guid setters and getters.
+    std::string chosen_joystick_guid() {
+        return chosen_joystick_guid_;
+    }
+
+    void set_chosen_joystick_guid(std::string new_str) {
+        chosen_joystick_guid_ = new_str;
+    }
+
+    std::string chosen_joystick_name() {
+        return chosen_joystick_name_;
+    }
+
+    void set_chosen_joystick_name(std::string new_str) {
+        chosen_joystick_name_ = new_str;
+    }
 
     // Custom joystick configuration, setters and getters for the name and guid
     // of the configured joystick.
-    std::string joystick_guid() {
-        return joystick_guid_;
+    std::string configured_joystick_guid() {
+        return configured_joystick_guid_;
     }
 
-    void set_joystick_guid(std::string new_str) {
-        joystick_guid_ = new_str;
+    void set_configured_joystick_guid(std::string new_str) {
+        configured_joystick_guid_ = new_str;
     }
 
-    std::string joystick_name() {
-        return joystick_name_;
+    std::string configured_joystick_name() {
+        return configured_joystick_name_;
     }
 
-    void set_joystick_name(std::string new_str) {
-        joystick_name_ = new_str;
+    void set_configured_joystick_name(std::string new_str) {
+        configured_joystick_name_ = new_str;
     }
 
     // Setters and getters for the custom joystick configuration.  c is the
@@ -1156,21 +1176,25 @@ namespace preferences {
 			}
 		}
 
-        // Load custom joystick configuration settings.  Refer to joystick.cpp
-        // for documentation of these settings.
+        // Load joystick settings.  Refer to joystick.cpp for documentation about custom configurations. 
+       
+        chosen_joystick_name_ = node["chosen_joystick_name"].as_string_default("-no-joystick-named-");
+        chosen_joystick_guid_ = node["chosen_joystick_guid"].as_string_default("");
+
         variant jc_node = node["joystick_configuration"];
         
-        // If there was no "joystick_configuration" we still want an actual
-        // empty node.  That makes it easier to create default values in the
+        // Any custom configuration settings will wrapped up inside the joystick_configuration node.
+        // Even if there isn't one of these nodes in the config file, we create
+        // one because that makes it easier to create default values in the
         // code below.
         if(jc_node.is_null()) {
             variant_builder vb;
             jc_node = vb.build();
         }
 
-        joystick_guid_ = jc_node["guid"].as_string_default("");
-        joystick_name_ = jc_node["name"].as_string_default("-no-joystick-named-");
-        std::cerr << "got id [" << joystick_guid_ << "] for [" << joystick_name_ << "]" << std::endl;
+        configured_joystick_guid_ = jc_node["guid"].as_string_default("");
+        configured_joystick_name_ = jc_node["name"].as_string_default("-no-joystick-named-");
+        std::cerr << "got id [" << configured_joystick_guid_ << "] for [" << configured_joystick_name_ << "]" << std::endl;
         
         for(int c = 0; c < controls::NUM_CONTROLS; c++) {
 
@@ -1221,10 +1245,14 @@ namespace preferences {
 		}
 
         // See joystick.cpp for a detailed explanation of how the joystick settings are used.
+        
+        node.add("chosen_joystick_name", chosen_joystick_name_);
+        node.add("chosen_joystick_guid", chosen_joystick_guid_);
+
         variant_builder jc_node;
 
-        jc_node.add("guid", joystick_guid_);
-        jc_node.add("name", joystick_name_);
+        jc_node.add("guid", configured_joystick_guid_);
+        jc_node.add("name", configured_joystick_name_);
         
         for(int c = 0; c < controls::NUM_CONTROLS; c++) {
 

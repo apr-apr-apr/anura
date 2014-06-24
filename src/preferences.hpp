@@ -169,14 +169,22 @@ namespace preferences {
 
 	bool use_joystick();
     void set_use_joystick(bool new_val);
-    
+   
+    // SDL Name and GUID of joystick last selected by the user. 
+    // An empty ("") GUID string means no joystick has been chosen.
+    std::string chosen_joystick_guid();
+    void set_chosen_joystick_guid(std::string new_guid);
+
+    std::string chosen_joystick_name();
+    void set_chosen_joystick_name(std::string new_name);
+
     // SDL Name and GUID of joystick whose custom configuration is saved in preferences. 
     // An empty ("") GUID string means no meaningful joystick preferences are saved.
-    std::string joystick_guid();
-    void set_joystick_guid(std::string new_guid);
+    std::string configured_joystick_guid();
+    void set_configured_joystick_guid(std::string new_guid);
 
-    std::string joystick_name();
-    void set_joystick_name(std::string new_name);
+    std::string configured_joystick_name();
+    void set_configured_joystick_name(std::string new_name);
 
     // These functions all say which part of the joystick an Anura in-game
     // control is mapped to.  controller_command is one of the controls in

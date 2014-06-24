@@ -65,7 +65,7 @@ namespace {
     // otherwise goes straight to the keyboard configure dialog.
     void show_configure_dialog() {
         // XXX #if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR then what do we do? Does the iPhone version use funny virtual keyboard?
-        if(!preferences::use_joystick()) {
+        if(joystick::current_device_id() == joystick::no_id) { // XXX !preferences::use_joystick()) {
             show_controls_dialog();
         } else {
             show_joystick_configure_dialog();
@@ -256,31 +256,39 @@ void show_controller_select_dialog()
 	configure_button->set_dim(button_width, button_height);
 	return_button->set_dim(button_width, button_height);
 
-    // Assemble the dropdown list of controllers.  We put Keyboard at the top of the list, and adjust other indices accordingly.
+    // Assemble the dropdown list of controllers.  
+    //
+    // The joystick module keeps an ordered list of devices, whose names and
+    // ids are provided in corresponding order by joystick_names() and
+    // joystick_ids().  We take those lists and stick "Keyboard" and
+    // 'no_id' at the front.  When the user selects drop-down-list item K,
+    // they get either the keyboard, or the joystick at position K-1 in the
+    // joystick module's device list. 
     joystick::synchronise_device_list();
     joystick_names = std::shared_ptr<std::vector<std::string>>(joystick::joystick_names());
     joystick_ids = std::shared_ptr<std::vector<SDL_JoystickID>>(joystick::joystick_ids());
     joystick_names->insert(joystick_names->begin(), "Keyboard");
-    joystick_ids->insert(joystick_ids->begin(), -1);
+    joystick_ids->insert(joystick_ids->begin(), joystick::no_id);
 
     dropdown_widget* select_dropdown = new dropdown_widget(*joystick_names, button_width, 20);
     select_dropdown->set_zorder(9);
 
-    // Find the current controller in the list and select it.  If joysticks are turned off, then the current controller is the keyboard.
-    int current_device_index;
-    if(!preferences::use_joystick()) {
-        current_device_index = 0;
+    // Find the current controller in the drop down list and select it.  If
+    // joysticks are turned off, then the current controller is the keyboard.
+    int current_device_dropdown_position;
+    if(joystick::current_device_id() == joystick::no_id) { //XXX!preferences::use_joystick()) {
+        current_device_dropdown_position = 0;
     } else {
-        current_device_index = 0;
+        current_device_dropdown_position = 0;
         for(int j = 0; j < joystick_ids->size(); j++) {
-            if((*joystick_ids)[j] == joystick::current_device()) {
-                current_device_index = j;
+            if((*joystick_ids)[j] == joystick::current_device_id()) {
+                current_device_dropdown_position = j;
                 break;
             }
         }
     }
 
-    select_dropdown->set_selection(current_device_index); 
+    select_dropdown->set_selection(current_device_dropdown_position); 
    
     // Set up the handler so that we change controllers when the list selection is changed.  If the user selects a joystick,
     // then preferences::use_joystick is turned on and we change the joystick device.  If the user selects the keyboard,
@@ -289,11 +297,14 @@ void show_controller_select_dialog()
     select_dropdown->set_on_select_handler(
             [&ret] (int selection,const std::string& s) {
                 if(selection == 0) {
-                    preferences::set_use_joystick(false);
-                    ret = -1;
+                    //preferences::set_use_joystick(false);
+                    joystick::change_device(joystick::no_device);
+                    joystick::set_joystick_selection_preferences();
+                    ret = joystick::no_device;
                 } else {
-                    preferences::set_use_joystick(true);
+                    //preferences::set_use_joystick(true);
                     joystick::change_device(selection - 1);
+                    joystick::set_joystick_selection_preferences();
                     ret = selection - 1;
                 }
             }

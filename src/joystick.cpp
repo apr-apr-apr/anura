@@ -621,16 +621,25 @@ namespace joystick {
     //      always-on base controller regardless.  Other joystick preferences
     //      will still be read / created and saved regardless of this setting.
     //
+    // string chosen_joystick_guid
+    //      An SDL GUID identifying the model of controller last chosen by the
+    //      user.  An empty string where not available.
+    //
+    // string chosen_joystick_name
+    //      (Supposedly) human-readable name of the joystick last chosen by the
+    //      user.  May be empty or a dummy value.  Minimal effect on
+    //      functionality. 
+    //
     // The rest of the settings relate to custom configuration of the joystick.
     // At this stage of development we only allow one configuration to be
     // saved.
     //
-    // string joystick_guid
+    // string configured_joystick_guid
     //      An SDL GUID identifying the model of controller whose custom
     //      mapping we have saved.  An empty string where not available.
     //      NOTE: Does NOT indicate which joystick was last used. 
     //
-    // string joystick_name
+    // string configured_joystick_name
     //      (Supposedly) human-readable name of the joystick these settings
     //      apply to.  May be empty or a dummy value.  Minimal effect on
     //      functionality. 
@@ -664,8 +673,8 @@ namespace joystick {
     // values or provide defaults where none exist.
     //
     // With the exception of use_joystick, all other settings are only ever
-    // written back into the preferences:: module when the user configures
-    // their own joystick on the configure screen.
+    // written back into the preferences:: module when the user selects or
+    // configures their own joystick in the options menus.
     //
     // Note 1: There is a UNION controller_signal, but to keep things simple it
     // cannot be encoded in the preferences file.  The motivation for having
@@ -717,6 +726,19 @@ namespace joystick {
                 }
             }
 
+            // Updates the preferences::joystick_something variables indicate
+            // which joystick the user has selected.  Doesn't change any saved
+            // configuration.
+            void set_preferences_from_chosen_device() {
+                if(device == NULL) {
+                    preferences::set_use_joystick(false);
+                } else {
+                    preferences::set_use_joystick(true);
+                    preferences::set_chosen_joystick_guid(device->get_guid());
+                    preferences::set_chosen_joystick_name(device->get_name());
+                }
+            }
+            
             // Updates the preferences::joystick_something variables relating
             // to joystick configuration to reflect the way the joystick is
             // currently set up.  If no sdl_controller is in use, no update
@@ -725,8 +747,8 @@ namespace joystick {
                 if(device == NULL) {
                     return;
                 }
-                preferences::set_joystick_guid(device->get_guid());
-                preferences::set_joystick_name(device->get_name());
+                preferences::set_configured_joystick_guid(device->get_guid());
+                preferences::set_configured_joystick_name(device->get_name());
                 for(int c = 0; c < controls::NUM_CONTROLS; c++) {
                     preferences::set_joy_part_kind(c, signal_map[c]->realise()->get_kind());
                     preferences::set_joy_part_id(c, signal_map[c]->realise()->get_id());
@@ -746,15 +768,15 @@ namespace joystick {
                 device = new_device;
                 if(device != NULL) {
                     std::cerr << "INFO: Now using controller " << device->get_name() << " [" << device->get_guid() << "]." << std::endl;
-                    preferences::set_use_joystick(true);
-                    if(device->get_guid() == preferences::joystick_guid()) {
+                    ///RRR preferences::set_use_joystick(true);
+                    if(device->get_guid() == preferences::configured_joystick_guid()) {
                         configure_from_preferences();
                     } else {
                         configure_blind();
                     }
                 } else {
                     std::cerr << "INFO: Now using NO controller." << std::endl;
-                    preferences::set_use_joystick(false);
+                    ///RRR preferences::set_use_joystick(false);
                 }
             }
 
@@ -942,24 +964,31 @@ namespace joystick {
                 return ret;
             }
 
-            // change_device(device_index) starts using the designated device for the local player.
-            // Any current device will be unceremoniously discarded.
-            // device_index refers to the postion of the chosen controller in the lists returned
-            // by joystick_ids() and joystick_names(), it is NOT an index into SDL's device list 
-            // or an SDL joystick instance id.
-            void change_device(int device_index) {
-                ASSERT_INDEX_INTO_VECTOR(device_index, joysticks);
-                local_player_controller->change_device(joysticks[device_index]);
+            // change_device(device_position) gets the local_player_controller to use the joystick designated by
+            // 'device_position'.  Any device it was previously using will be unceremoniously discarded.
+            //
+            // Alternatively, calling change_device(no_device) will cause the local_player_controller to use no
+            // joystick.
+            // 
+            // 'device_position' refers to the postion of the chosen controller in 'joysticks', joystick_ids() and
+            // joystick_names().  
+            void change_device(int device_position) {
+                if(device_position == no_device) {
+                    local_player_controller->change_device(NULL);
+                } else {
+                    ASSERT_INDEX_INTO_VECTOR(device_position, joysticks);
+                    local_player_controller->change_device(joysticks[device_position]);
+                }
             }
 
             // device_id() returns the *instance* id for the current controller.
-            // If there is no current controller, joystick::no_device;
+            // If there is no current controller, joystick::no_id;
             SDL_JoystickID device_id() {
                 std::shared_ptr<sdl_controller> device = local_player_controller->get_device();
                 if(device) {
                     return device->get_id();
                 } else {
-                    return no_device;
+                    return no_id;
                 }
             }
 
@@ -1095,6 +1124,7 @@ namespace joystick {
             // inbuilt db (from whenever SDL was compiled, maybe ages ago) and load
             // the user's own SDL_GameController configuration database, if it
             // exists
+#if !TARGET_OS_MAC
             std::string user_sdl_gamecontroller_db = std::string(preferences::user_data_path()) + "/sdl_gamecontrollerdb.txt";
             if(sys::file_exists(user_sdl_gamecontroller_db)) {
                 int db_result = SDL_GameControllerAddMappingsFromFile(user_sdl_gamecontroller_db.c_str());
@@ -1106,6 +1136,7 @@ namespace joystick {
             } else {
                 std::cerr << "There is no user game controller database called [" << user_sdl_gamecontroller_db << "]." << std::endl;
             }
+#endif
         }
 
         if(SDL_InitSubSystem(SDL_INIT_HAPTIC) != 0) {
@@ -1155,11 +1186,11 @@ namespace joystick {
             // See if the joystick saved in preferences is connected now.  If not, we'll settle for the
             // first available stick, if there is one.  If there are no sticks, we'll turn joysticks
             // off in preferences::.  Will probably want to decouple preferences use_joystick() by
-            // using device != NULL or device_id != no_device in future.
+            // using device != NULL or device_id != no_id in future.
             std::shared_ptr<sdl_controller> chosen_stick = NULL;
-            if(preferences::joystick_guid().length() > 0) { // empty string indicates that we have no particular saved preferences
+            if(preferences::chosen_joystick_guid().length() > 0) { // empty string indicates that we have no particular saved preferences
                 for(auto curr_stick : joysticks) {
-                    if(curr_stick->get_guid() == preferences::joystick_guid()) {
+                    if(curr_stick->get_guid() == preferences::chosen_joystick_guid()) {
                         chosen_stick = curr_stick;
                         break;
                     }
@@ -1171,7 +1202,7 @@ namespace joystick {
             } else if(joysticks.size() > 0) {
                 local_player_controller->change_device(joysticks[0]);
             } else {
-                preferences::set_use_joystick(false);
+                //preferences::set_use_joystick(false); // XXX just do nothing here
             }
         }
 
@@ -1433,8 +1464,7 @@ namespace joystick {
     }
 
     //
-    // Singluar to joystick_manager calls.  See header and joystick_manager
-    // documentation.
+    // Singluar to joystick_manager calls.  See header and joystick_manager documentation.
     //
 
     bool synchronise_device_list() {
@@ -1453,19 +1483,26 @@ namespace joystick {
         local_manager->change_device(local_joystick_index);
     }
 
-    SDL_JoystickID current_device() {
+    void set_joystick_selection_preferences() {
+        local_joystick->set_preferences_from_chosen_device();
+    }
+
+    SDL_JoystickID current_device_id() {
         return local_manager->device_id();
     }
 
     //
-    // Singular to player_controller calls.  See player_controller
-    // documentation.
+    // Singular to player_controller calls.  See header and player_controller documentation.
     //
 
     void change_mapping(const int* kinds, const int* ids, const int* data0, const int* data1) {
         local_joystick->change_mapping(kinds, ids, data0, data1);
+    }
+
+    void set_joystick_configuration_preferences() {
         local_joystick->set_preferences_from_configuration();
     }
+
 
     bool up() {
         if(silent) {
@@ -1611,9 +1648,9 @@ namespace joystick {
 
     // Update SDL's joystick statuses.  This will circulate input events as well.
     void update() {
-        if(preferences::use_joystick()) {
+        //if(preferences::use_joystick()) { //XXX Need to confirm safety of doing this.  
             SDL_JoystickUpdate();
-        }
+        //}
     }
 
 
