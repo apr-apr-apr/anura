@@ -38,7 +38,7 @@
 #include "widget_factory.hpp"
 
 namespace {
-
+    
         // The Joystick Configuration Dialog works by asking the player to
         // press the relevant button/hat/axis for each in-game control signal,
         // up, down, left etc.
@@ -46,8 +46,8 @@ namespace {
         // We take this interrogative approach because it is a low common
         // denominator that is relatively quick and painless for the player.  
         // It means the player doesn't need to fiddle round indefinitely trying
-        // to work out whether button called triangle on her controller is what
-        // the Linux driver calls button 3.
+        // to work out whether the button called triangle on her controller is
+        // what the Linux driver calls button 3.
         // 
         // The dialog is roughly laid out:
         //
@@ -55,7 +55,7 @@ namespace {
         //
         // [Finger image]  [Instruction label: "Please press JUMP now."]
         // 
-        // [Previous button: "Go back one control"]
+        // [Back button]
         //
         // [Cancel button] [Okay button]
         // 
@@ -64,33 +64,35 @@ namespace {
         // instruction label to attract attention when the user needs to press
         // the next button. 
 
+    
+    void end_dialog(gui::dialog* d);
 
     class JoystickMonitoringLabel : public gui::graphical_font_label {
-        // JoystickMonitoringLabel is a graphical_font_label that also listens
-        // to the joystick, grabs control signals and tells the player what to
-        // do when.  It implements the bulk of the logic for the configuration
-        // procedure using a slightly dodgy sequence of states.
+        // JoystickMonitoringLabel is a graphical_font_label that also
+        // manages the configuration process for us - it works as a kind of
+        // state machine. 
+        //
+        // Every gui update cycle it prompts the user or uses the joystick::
+        // configuration functions to listen for controller input.
         //
         // In addition to telling the player what to press when, the
         // JoystickMonitoringLabel also decides when the Previous and Okay
         // buttons should be active, and when the finger image needs to flash.
-        //
-        // During the configuration procedure it maintains its own record of 
-        // which axes/buttons/hats have been pressed corresponding to which
-        // in-game control (up/left/jump/tongue etc), assembled by directly
-        // listening to the relevant SDL events.  
        
         private:
 
             // Our states.
             enum State {
                 welcome,                // Brief pause at start
+                dead_zone_start,        // Saying "Please leave your controller still and press Okay to start"
+                getting_dead_zone,      // Saying "Please leave the controller still now"
+                lively_dead_zone,       // Saying "Your dead zone is lively."
                 getting_button,         // Saying "Press the button for JUMP" 
-                checking_button,        // Checking same button not used twice (instantaneous)
                 already_used,           // Telling user they used same button twice.
                 confirming_got_button,  // Telling user their button press was received.
                 decide_finished,        // Checking whether any more buttons to go (instantaneous)
-                finished                // Telling the user they can press Okay now.
+                finished,               // Telling the user they can press Okay now.
+                aborted                 // Do nothing, have been cancelled
             };
 
             // Both our ticks count down the number of gui refresh cycles.  
@@ -105,16 +107,9 @@ namespace {
             int finger_tick;
             
             int curr_control;           // Which in-game control we are up to.
-            State state;                // The current state.  Must only be changed by calling start_state().
+            State state;                // The current state.  Must only be changed by calling start_new_state().
+            joystick::listen_result result; // Result of trying to fetch a controller press from the user.
 
-            SDL_JoystickID target_device;
-
-            // See joystick.cpp's documentation for how preferences are stored. 
-            int part_kinds[controls::NUM_CONTROLS];
-            int part_ids[controls::NUM_CONTROLS];
-            int part_data0[controls::NUM_CONTROLS];
-            int part_data1[controls::NUM_CONTROLS];
-            
             // Other gui components we need to affect
             gui::button* okay_button;
             gui::graphical_font_label* okay_label;
@@ -125,9 +120,8 @@ namespace {
 
         public:
 
-                // After construction, the JoystickMonitoringLabel is ready to
-                // run as soon as it is added to a dialog and that dialog is
-                // run.
+            // After construction, the JoystickMonitoringLabel is ready to run
+            // as soon as it is added to a dialog and that dialog is run.
             JoystickMonitoringLabel(
                     const std::string& text, const std::string& font, int size,
                     gui::button* okay_button_in, gui::graphical_font_label* okay_label_in, 
@@ -143,27 +137,58 @@ namespace {
                 tick = 0;
                 finger_tick = 0;
                 start_new_state(welcome);
-                target_device = joystick::current_device_id();
             }
 
-                // Sends the controller mapping we have accumulated to the joystick:: module. 
+            // effect_remap() does:
+            // 1) Actually use the mapping we have created
+            // 2) Set preferences to use this configuration
+            // 3) Shut down joystick:: module configuration 
             void effect_remap() {
                 if(state != finished) {
                     std::cerr << "cannot effect remap unless state is finished" << std::endl;
                     return;
                 }
-                joystick::change_mapping(part_kinds, part_ids, part_data0, part_data1);
+                joystick::apply_configuration();
+                joystick::stop_configurer();
                 joystick::set_joystick_configuration_preferences();
             }
 
-                // Backtracks to the previous in-game control (in case you make
-                // a mistake mid configuration).
+            // Backtracks to the previous in-game control (in case you make a mistake mid configuration), or even to the
+            // dead-zone analysis step.
             void back_one_control() {
+                // disable okay, finger
                 if(curr_control != 0) {
-                   curr_control--;
+                    curr_control--;
+                    joystick::retreat();
+                    start_new_state(getting_button);
+                } else {
+                    start_new_state(dead_zone_start);
                 }
-                start_new_state(getting_button);
             } 
+
+            // When the okay button is clicked:
+            // 1) Actually use the mapping the user has just created for the in-game joystick, and
+            // 2) store it in preferences::.
+            void okay_button_click(gui::dialog* d) {
+                if(state == finished) {
+                    effect_remap();
+                    end_dialog(d);
+                } else if(state == dead_zone_start) {
+                    start_new_state(getting_dead_zone);
+                } else if(state == lively_dead_zone) {
+                    start_new_state(getting_button);
+                }
+            }
+
+            // When the cancel button is clicked:
+            // 1) Go into the abort state
+            // 2) Clean up joystick:: configurer
+            // 3) Kill the dialog
+            void cancel_button_click(gui::dialog* d) {
+                start_new_state(aborted);
+                joystick::stop_configurer();
+                end_dialog(d);
+            }
 
         protected:
 
@@ -172,10 +197,18 @@ namespace {
             enum State next_state(State state) {
                 switch(state) {
                     case welcome:
+                        return dead_zone_start;
+                    case dead_zone_start:
+                        return getting_dead_zone;
+                    case getting_dead_zone:
+                        if(joystick::dead_zones_dangerous()) {
+                            return lively_dead_zone;
+                        } else {
+                            return getting_button;
+                        }
+                    case lively_dead_zone:
                         return getting_button;
                     case getting_button:
-                        return checking_button;
-                    case checking_button:
                         return confirming_got_button;
                     case already_used:
                         return getting_button;
@@ -185,59 +218,11 @@ namespace {
                         return finished;
                     case finished:
                         return finished;
+                    case aborted:
+                        return aborted;
                     default:
                         ASSERT_FATAL("state out of range");
                 }
-            }
-
-            // handle_event(event, claimed) is how we read in joystick commands
-            // from the user.  We only actively harvest events during the
-            // getting_button state.  If this SDL 'event' is from the device
-            // the user is configuring, we claim it by returning true.
-            // Otherwise we return 'claimed' unchanged.
-            //
-            // The controller action in each captured event is transcribed to
-            // the part_* arrays for later despatch to the joystick module. 
-            virtual bool handle_event(const SDL_Event& event, bool claimed)
-                override {
-                if(state != getting_button) {
-                    return claimed;
-                }    
-                switch(event.type) {
-                    case SDL_CONTROLLERAXISMOTION:
-                    case SDL_JOYAXISMOTION:
-                        if(event.jaxis.which == target_device && abs(event.jaxis.value) >= joystick::small_mag) {
-                            part_kinds[curr_control] = joystick::AXIS;
-                            part_ids[curr_control] = event.jaxis.axis;
-                            part_data0[curr_control] = (event.jaxis.value > 0) ? joystick::small_mag : -joystick::large_mag;
-                            part_data1[curr_control] = (event.jaxis.value > 0) ? joystick::large_mag : -joystick::small_mag;
-                            start_new_state(checking_button);
-                            claimed = true;
-                        }
-                        break;
-                    case SDL_CONTROLLERBUTTONDOWN:
-                    case SDL_JOYBUTTONDOWN:
-                        if(event.jbutton.which == target_device) {
-                            part_kinds[curr_control] = joystick::BUTTON;
-                            part_ids[curr_control] = event.jbutton.button;
-                            part_data0[curr_control] = 0;
-                            part_data1[curr_control] = 0;
-                            start_new_state(checking_button);
-                            claimed = true;
-                        }
-                        break;
-                    case SDL_JOYHATMOTION:
-                        if(event.jhat.which == target_device && event.jhat.value != SDL_HAT_CENTERED) {
-                            part_kinds[curr_control] = joystick::HAT;
-                            part_ids[curr_control] = event.jhat.hat;
-                            part_data0[curr_control] = event.jhat.value;
-                            part_data1[curr_control] = 0;
-                            start_new_state(checking_button);
-                            claimed = true;
-                        }
-                }
-
-                return claimed;
             }
 
             // Changes the current state to new_state and performs the (re-)initialisation necessary for new_state.
@@ -247,44 +232,78 @@ namespace {
                 state = new_state;
                 switch(state) {
                     case welcome:
-                        tick = 50;
+                        tick = 60;
                         curr_control = 0;
-                        set_text("...Starting...");
+                        joystick::start_configurer();
+                        set_text("\n \nStarting...");
                         okay_button->enable(true); // XXX widget.hpp coding bug: enable(true) is actually disable(true).
                         okay_label->enable(true); 
                         previous_button->enable(true);
                         previous_label->enable(true);
                         finger_image->set_visible(false);
                         break;
+                    case dead_zone_start:
+                        tick = 0;
+                        okay_button->enable(false);
+                        okay_label->enable(false);
+                        previous_button->enable(true);
+                        previous_label->enable(true);
+                        finger_image->set_visible(false);
+                        joystick::clear_dead_zones();
+                        //set_text("Rgone\ngRtwo\nRgthree\ngRfour\nRgfive\ngRsix\nRgseven\ngReight\nnine");
+                        set_text(   "First we need to calibrate the neutral\n"
+                                    "positions on your controller.\n"
+                                    " \n"
+                                    "Please press NOTHING on your controller,\n"
+                                    "and select Okay to start.");
+                        break;
+                    case getting_dead_zone:
+                        tick = 120;
+                        finger_tick = 10;
+                        okay_button->enable(true); 
+                        okay_label->enable(true);
+                        previous_button->enable(true);
+                        previous_label->enable(true);
+                        finger_image->set_visible(true);
+                        set_text(   " \n"
+                                    "Checking device...\n"
+                                    " \n"
+                                    "Please press NOTHING.\n");
+                        break;
+                    case lively_dead_zone:
+                        tick = 0;
+                        okay_button->enable(false);
+                        okay_label->enable(false);
+                        previous_button->enable(false);
+                        previous_label->enable(false);
+                        finger_image->set_visible(false);
+                        set_text(   "Your controller seems to be wobbling.\n"
+                                    "Did you press something by mistake?\n"
+                                    " \n"
+                                    "Select Back to try again.\n"
+                                    "Select Okay to keep going anyway."); 
+                        break;
                     case getting_button:
                         tick = 0;
                         finger_tick = 10;
                         okay_button->enable(true); 
                         okay_label->enable(true);
-                        if(curr_control > 0) {
-                            previous_button->enable(false);
-                            previous_label->enable(false);
-                        } else {
-                            previous_button->enable(true);
-                            previous_label->enable(true);
-                        }
-                        set_text("Please press [" + std::string(controls::control_names()[curr_control]) + "]");
-                        break;
-                    case checking_button:
-                        finger_image->set_visible(false);
-                        if(current_control_clashes()) {
-                            start_new_state(already_used);
-                        } else {
-                            start_new_state(confirming_got_button);
-                        }
+                        previous_button->enable(false);
+                        previous_label->enable(false);
+                        set_text(   " \n"
+                                    " \n"
+                                    "Please press [" + std::string(controls::control_names()[curr_control]) + "] now.");
                         break;
                     case already_used:
                         tick = 60;
-                        set_text("You have already used that.");
+                        set_text(   " \n"
+                                    " \n"
+                                    "You have already used that action.");
                         break;
                     case confirming_got_button:
                         tick = 30;
-                        set_text("Got action for [" + std::string(controls::control_names()[curr_control]) + "]");
+                        set_text(   " \n"
+                                    " \nGot action for [" + std::string(controls::control_names()[curr_control]) + "].");
                         break;
                     case decide_finished:
                         curr_control++;
@@ -298,64 +317,65 @@ namespace {
                         tick = 0;
                         okay_button->enable(false);
                         okay_label->enable(false);
-                        set_text("All done! Press Okay to save.");
-                        std::cerr << "Got (kind,id,polarity): ";
-                        for(int c = 0; c < controls::NUM_CONTROLS; c++) {
-                            std::cerr << "(" << part_kinds[c] << ", " << part_ids[c] << ", " << part_data0[c] << ", " << part_data1[c] << ") ";
-                        }
-                        std::cerr << std::endl;
+                        set_text(   " \n"
+                                    "All done!\n"
+                                    " \n"
+                                    "Press Okay to save.\n");
+                        break;
+                    case aborted:
                         break;
                 }
             }
 
-
-            // Compares the current (curr_control) joystick part signal with all the previous ones to see if it is the same as
-            // any of them.  (So we can stop the player making CONTROL_LEFT and CONTROL_TONGUE the same button by accident.)
-            bool current_control_clashes() {
-                bool ret = false;
-                for(int c = 0; c < curr_control; c++) {
-                    ret = ret || clash(c, curr_control);
-                }
-                return ret;
-            }
-
-
-            // Compares the joystick part signals at positions control_one and control_two in the part_* arrays and
-            // determines if they effectively the same.  Buttons clash if their ids are the same.  Axes clash if their ids are the
-            // same and their low and high ranges cross.  Because this class only ever creates two ranges for an axis, [-large_mag,
-            // -small_mag] and [small_mag, large_mag] it is enough just to test if the low values of the two axes are the same. Hats
-            // clash if they have the same id and position (low) value. 
-            bool clash(int control_one, int control_two) {
-                return  (   part_kinds[control_one] == part_kinds[control_two] 
-                        &&  part_ids[control_one] == part_ids[control_two]
-                        &&  (   part_kinds[control_one] == joystick::BUTTON
-                            ||  part_data0[control_one] == part_data0[control_two]
-                            )
-                        );
-            }
-
-
-            // Called every gui update cycle.  Implements our time-impervious ticks as described at their declaration.
+            // Called every gui update cycle.  Implements the ticking of our local clock.
             virtual void handle_process() override {
                 gui::graphical_font_label::handle_process();
+             
+                // If 'tick' is above zero, it is counting down every update
+                // cycle, and when it hits zero it sparks a transition to the
+                // next state.  The getting_dead_zone state listens to the
+                // joystick every tick for a fixed time period.
                 if(tick > 0) {
                     tick--;
                     if(tick == 0) {
                         start_new_state(next_state(state));
                     }
+            
+                    if(state == getting_dead_zone) {
+                        finger_tick--;
+                        if(finger_tick <= 0) {
+                            finger_tick = 10;
+                            finger_image->set_visible(!finger_image->visible());
+                        }
+                        // The state getting_dead_zone lasts some time, but we
+                        // only check the dead zone towards the end.  This
+                        // gives the user a few extra ticks to release all the
+                        // buttons. 
+                        if(tick < 60) {
+                            joystick::examine_dead_zones_tick();
+                        }
+                    }
                 } else {
+                    // If 'tick' is zero, the state lasts indefinitely until
+                    // some other condition changes it.  The getting_button
+                    // state flashes the finger and listens to the joystick
+                    // indefinitely
                     if(state == getting_button) {
                         finger_tick--;
                         if(finger_tick <= 0) {
                             finger_tick = 10;
                             finger_image->set_visible(!finger_image->visible());
                         }
+
+                        joystick::listen_result res = joystick::listen_for_signal();
+                        if(res == joystick::duplicate) {
+                            start_new_state(already_used);
+                        } else if(res == joystick::success_keep_going || res == joystick::success_finished) {
+                            start_new_state(confirming_got_button);
+                        }
                     }
                 }
             }
-
-
-
     };
 
 
@@ -371,18 +391,25 @@ namespace {
         jml->back_one_control();
     }
 
-    // Close the dialog
-    void end_dialog(gui::dialog* d) {
+    // Always called when the dialog closes.
+    void cleanup(bool ignored) {
+        joystick::stop_configurer();
         joystick::set_silent(false);
+        std::cerr << "CLEANING UP" << std::endl;
+    }
+
+    // Close the dialog.
+    void end_dialog(gui::dialog* d) {
         d->close();
     }
 
-    // 1) Actually use the mapping the user has just created for the in-game joystick, and
-    // 2) store it in preferences::.
-    void confirm_remapping(gui::dialog* d) {
-        static_cast<JoystickMonitoringLabel*>(instruction_label.get())->effect_remap();
-        end_dialog(d);
-    }
+    void okay_button_click(gui::dialog* d) {
+        static_cast<JoystickMonitoringLabel*>(instruction_label.get())->okay_button_click(d);
+    } 
+    
+    void cancel_button_click(gui::dialog* d) {
+        static_cast<JoystickMonitoringLabel*>(instruction_label.get())->cancel_button_click(d);
+    } 
 
     void do_draw_scene() {
         draw_scene(level::current(), last_draw_position());
@@ -394,9 +421,10 @@ namespace {
 void show_joystick_configure_dialog()
 {
 	
-	int button_width = 220;//232;
+	int button_width = 240;//232;
 	int button_height = 45;//50;
-    int label_height = 45;
+    //int label_height = 45;
+    int text_line_height = 18;
     int outer_padding = 20;
 	int padding = 12;//16;
 	gui::BUTTON_RESOLUTION button_resolution = gui::BUTTON_SIZE_DOUBLE_RESOLUTION;
@@ -420,7 +448,7 @@ void show_joystick_configure_dialog()
 
     // Create labels
     title_label = widget_ptr(new graphical_font_label(_("Configuring Game Controller"), "door_label", 2));
-    graphical_font_label* previous_label_raw = new graphical_font_label(_("Change previous button"), "door_label", 2);
+    graphical_font_label* previous_label_raw = new graphical_font_label(_("Back"), "door_label", 2);
     previous_label = widget_ptr(previous_label_raw);
     cancel_label = widget_ptr(new graphical_font_label(_("Cancel"), "door_label", 2));
     graphical_font_label* okay_label_raw = new graphical_font_label(_("Okay"), "door_label", 2);
@@ -440,30 +468,35 @@ void show_joystick_configure_dialog()
 
     
     window_h =      outer_padding           //
-                +   label_height            // Configuration
+                +   text_line_height        // Configuration
                 +   padding                 //
-                +   label_height            // Push UP now
+                +   text_line_height        //       "Push UP now
+                +   text_line_height        //        + 2nd line of text
+                +   text_line_height        // [pic]  + 3rd line of text
+                +   text_line_height        //        + 4th line of text
+                +   text_line_height        //        + 5th line of text..."
                 +   padding                 //
-                +   button_height           // Redo Previous button
+                +   button_height           // [       BACK       ]
                 +   padding                 //
-                +   button_height           // Cancel   ||    Okay
+                +   button_height           // [CANCEL]    [ OKAY ]
                 +   outer_padding           //
                 ;
 
 	dialog d((preferences::virtual_screen_width()/2 - window_w/2) & ~1, (preferences::virtual_screen_height()/2 - window_h/2) & ~1, window_w, window_h);
+    d.set_on_close(boost::bind(cleanup, false));
 	d.set_padding(padding);
 	d.set_background_frame("empty_window");
 	d.set_upscale_frame(upscale_dialog_frame);
 	d.set_draw_background_fn(do_draw_scene);
 
     // Create okay and cancel buttons
-    button* okay_button_raw = new button(okay_label, boost::bind(confirm_remapping, &d), BUTTON_STYLE_NORMAL, button_resolution);
+    button* okay_button_raw = new button(okay_label, boost::bind(okay_button_click, &d), BUTTON_STYLE_NORMAL, button_resolution);
 	widget_ptr okay_button(okay_button_raw); 
 	okay_button->set_dim(button_width, button_height);
     okay_button->set_disabled_opacity(disabled_opacity);
     okay_label->set_disabled_opacity(disabled_opacity);
     
-    button* cancel_button_raw = new button(cancel_label, boost::bind(end_dialog, &d), BUTTON_STYLE_NORMAL, button_resolution);
+    button* cancel_button_raw = new button(cancel_label, boost::bind(cancel_button_click, &d), BUTTON_STYLE_NORMAL, button_resolution);
 	widget_ptr cancel_button(cancel_button_raw);
 	cancel_button->set_dim(button_width, button_height);
     
@@ -478,10 +511,10 @@ void show_joystick_configure_dialog()
     widget_ptr finger(finger_raw);
 
     // Create the instruction label
-    JoystickMonitoringLabel* jml_raw = new JoystickMonitoringLabel("Awaiting your input.", "door_label", 2, 
+    JoystickMonitoringLabel* jml_raw = new JoystickMonitoringLabel("-placeholder-text-", "door_label", 2, 
             okay_button_raw, okay_label_raw, cancel_button_raw, finger_raw, previous_button_raw, previous_label_raw);
     instruction_label = widget_ptr(jml_raw);
-    instruction_label->set_dim(2*button_width + padding, button_height);
+    instruction_label->set_dim(button_width + padding + button_width, 5*text_line_height);
 	ASSERT_LOG(instruction_label != NULL, "Couldn't create instruction label widget.");
 
     // Link previous_button to instruction_label
@@ -490,8 +523,8 @@ void show_joystick_configure_dialog()
     // Place widgets in dialog    
     d.set_padding(padding);
     d.add_widget(title_label, outer_padding, outer_padding);
-    d.add_widget(finger);
-    d.add_widget(instruction_label, outer_padding + finger_raw->width() + padding, outer_padding + title_label->height() + padding);
+    d.add_widget(finger, outer_padding, outer_padding + text_line_height + padding + (text_line_height*5.0/2.0) - (0.5*finger_raw->height()));
+    d.add_widget(instruction_label, outer_padding + finger_raw->width() + padding, outer_padding + text_line_height + padding);
     d.add_widget(previous_button, outer_padding, outer_padding + title_label->height() + padding + instruction_label->height() + padding);
     d.add_widget(cancel_button, dialog::MOVE_RIGHT);
     d.add_widget(okay_button);

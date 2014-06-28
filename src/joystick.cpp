@@ -88,6 +88,12 @@ namespace joystick {
             virtual Sint16 read_axis(int axis_id) = 0;
             virtual Uint8 read_button(int button_id) = 0;
             virtual Uint8 read_hat(int hat_id) = 0;
+
+            // The num_functions return the number of relevant part in SDL's
+            // model of the controller.
+            virtual int num_axes() = 0;
+            virtual int num_buttons() = 0;
+            virtual int num_hats() = 0;
            
             // Get SDL device attributes.  get_id() returns this controller's
             // SDL *instance* ID, which is different from the device id
@@ -128,6 +134,18 @@ namespace joystick {
             
             Uint8 read_hat(int hat_id) override {
                 return SDL_JoystickGetHat(joystick, hat_id);
+            }
+
+            int num_axes() override {
+                return SDL_JoystickNumAxes(joystick);
+            }
+
+            int num_buttons() override {
+                return SDL_JoystickNumButtons(joystick);
+            }
+
+            int num_hats() override {
+                return SDL_JoystickNumHats(joystick);
             }
             
             SDL_JoystickID get_id() override {
@@ -194,10 +212,22 @@ namespace joystick {
                 return SDL_GameControllerGetButton(game_controller, (SDL_GameControllerButton) button_id);
             }
 
+            int num_axes() override {
+                return SDL_CONTROLLER_AXIS_MAX;
+            }
+
+            int num_buttons() override {
+                return SDL_CONTROLLER_BUTTON_MAX;
+            }
+
             // SDL_GameController has no hats, so this function should never be
             // called. If it is, it always returns SDL_HAT_CENTERED. 
             Uint8 read_hat(int hat_id) override {
                 return SDL_HAT_CENTERED;
+            }
+
+            int num_hats() override {
+                return 0;
             }
 
             SDL_JoystickID get_id() override {
@@ -933,6 +963,282 @@ namespace joystick {
 
     };
 
+
+    class interactive_controller_configurer {
+        private:
+            std::shared_ptr<sdl_controller> device;
+
+            int curr_control;
+                        // See joystick.cpp's documentation for how preferences are stored. 
+            int part_kinds[controls::NUM_CONTROLS];
+            int part_ids[controls::NUM_CONTROLS];
+            int part_data0[controls::NUM_CONTROLS];
+            int part_data1[controls::NUM_CONTROLS]; 
+      
+            const static int MAX_AXES = 256; // Maximum number of axes SDL can have on a joystick (owing to 8 bit id field in SDL_Event) 
+            int neutral_min[MAX_AXES];
+            int neutral_max[MAX_AXES];
+            
+            // Compares the joystick part signals at positions control_one and control_two in the part_* arrays and
+            // determines if they effectively the same.  Buttons clash if their ids are the same.  Axes clash if their ids are the
+            // same and their low and high ranges cross.  Because this class only ever creates two ranges for an axis, [-large_mag,
+            // -small_mag] and [small_mag, large_mag] it is enough just to test if the low values of the two axes are the same. Hats
+            // clash if they have the same id and position (low) value. 
+            bool clash(int control_one, int control_two) {
+                return  (   part_kinds[control_one] == part_kinds[control_two] 
+                        &&  part_ids[control_one] == part_ids[control_two]
+                        &&  (   part_kinds[control_one] == joystick::BUTTON
+                            ||  part_data0[control_one] == part_data0[control_two]
+                            )
+                        );
+            }
+
+            // Compares the current (curr_control) joystick part signal with all the previous ones to see if it is the same as
+            // any of them.  (So we can stop the player making CONTROL_LEFT and CONTROL_TONGUE the same button by accident.)
+            bool current_control_clashes() {
+                bool ret = false;
+                for(int c = 0; c < curr_control; c++) {
+                    ret = ret || clash(c, curr_control);
+                }
+                return ret;
+            }
+
+            bool in_order(int lo, int mid, int hi) {
+               return lo <= mid && mid <= hi;
+            }
+
+            listen_result check_signal(bool got_signal) {
+                if(!got_signal) {
+                    return still_listening;
+                }
+                if(current_control_clashes()) {
+                    return duplicate;
+                }
+                curr_control++;
+                if(curr_control >= controls::NUM_CONTROLS) {
+                    curr_control--;
+                    return success_finished;
+                } else {
+                    return success_keep_going;
+                }
+            }
+
+        public:
+
+            interactive_controller_configurer(std::shared_ptr<sdl_controller> i_device) {
+                device = i_device;
+                curr_control = 0;
+            }
+
+            // Default dead zone ranges.
+            void default_dead_zones() {
+                for(int idx = 0; idx < MAX_AXES; idx++) {
+                    //if(idx < 4) {
+                        neutral_min[idx] = 0;
+                        neutral_max[idx] = 0;
+                    //} else {
+                    //    neutral_min[idx] = -large_mag;
+                    //    neutral_max[idx] = -32768;
+                    //}
+                }
+            }
+
+            // Initialises dead zone ranges.
+            void clear_dead_zones() {
+                for(int idx = 0; idx < MAX_AXES; idx++) {
+                    neutral_min[idx] = large_mag;
+                    neutral_max[idx] = -large_mag;
+                }
+            }
+
+            // Scans all axes, assuming they are sitting in a neutral position,
+            // and updates the neutral ranges.  Call successively to account
+            // for noisy axes.
+            void dead_zones_tick() {
+                for(int idx = 0; idx < MAX_AXES; idx++) {
+                    int curr_val = device->read_axis(idx);
+                    if(curr_val < neutral_min[idx]) {
+                        neutral_min[idx] = curr_val;
+                    }
+                    if(curr_val > neutral_max[idx]) {
+                        neutral_max[idx] = curr_val;
+                    }
+                    //std::cerr << "DZ " << idx << " val: " << curr_val << " " << neutral_min[idx] << " " << neutral_max[idx] << std::endl;
+                }
+            }
+
+            // We declare the axis to be abnormally noisy if in the (supposed)
+            // neutral position it varies by 1/16th of the total range or more.
+            // This might mean the player has bumped an axis while we were
+            // scanning it, so the result is dangerous.
+            bool dead_zones_dangerous() {
+                print_dead_zones();
+                bool abnormal = false;
+                for(int idx = 0; idx < MAX_AXES; idx++) {
+                    abnormal = abnormal || (neutral_max[idx] - neutral_min[idx] >= small_mag);
+                }
+                return abnormal;
+            }
+
+            void print_dead_zones() {
+                std::cerr << "===Axis Neutral Zones===" << std::endl;
+                std::cerr << "(axis, dead zone min, dead zone max)" << std::endl;
+                for(int idx = 0; idx < device->num_axes(); idx++) {
+                    std::cerr << "(" << idx << ", " << neutral_min[idx] << ", " << neutral_max[idx] << ")" << std::endl;
+                }
+                std::cerr << "Dead zones are defined by padding neutral zones by " << small_mag << " either side." << std::endl;
+            }
+/*
+            // is_for_device(event) returns true if the given event is 1) for
+            // the sdl_controller device we are configuring, and 2) potentially
+            // interesting.
+            bool is_for_device(const SDL_Event& event) {
+                switch(event.type) {
+                    case SDL_CONTROLLERAXISMOTION:
+                    case SDL_JOYAXISMOTION:
+                        return (event.jaxis.which == device->get_id());
+                    case SDL_CONTROLLERBUTTONDOWN:
+                    case SDL_JOYBUTTONDOWN:
+                        return (event.jbutton.which == device->get_id());
+                    case SDL_JOYHATMOTION:
+                        return (event.jhat.which == device->get_id());
+            }
+*/
+
+            listen_result listen_for_signal() {
+                update();
+                
+                // See if there is anything interesting on the axes.
+                for(int idx = 0; idx < device->num_axes(); idx++) {
+                    int max = neutral_max[idx] + small_mag;
+                    int min = neutral_min[idx] - small_mag;
+                    int val = device->read_axis(idx);
+                    if(!in_order(min, val, max)) {
+                        part_kinds[curr_control] = joystick::AXIS;
+                        part_ids[curr_control] = idx;
+                        part_data0[curr_control] = (val > max) ? (max + 1)   : (-large_mag);
+                        part_data1[curr_control] = (val > max) ? (large_mag) : (min - 1);
+                        std::cerr << "AXIS HIT " << idx << " "  << val << " " << min << " " << max << std::endl;
+                        return check_signal(true);
+                    } else {
+                        if(val != 0) {
+                            //std::cerr << "AXIS MISS " << idx << " " << val << std::endl;
+                        }
+                    }    
+                }
+
+                // The buttons
+                for(int idx = 0; idx < device->num_buttons(); idx++) {
+                    if(device->read_button(idx)) {
+                        part_kinds[curr_control] = joystick::BUTTON;
+                        part_ids[curr_control] = idx;
+                        part_data0[curr_control] = 0;
+                        part_data1[curr_control] = 0;
+                        return check_signal(true);
+                    }
+                }
+
+                // The hats
+                for(int idx = 0; idx < device->num_hats(); idx++) {
+                    int val = device->read_hat(idx);
+                    if(val != SDL_HAT_CENTERED) {
+                        part_kinds[curr_control] = joystick::HAT;
+                        part_ids[curr_control] = idx;
+                        part_data0[curr_control] = val;
+                        part_data1[curr_control] = 0;
+                        return check_signal(true);
+                    }
+                }
+
+                return check_signal(false);
+            }
+/*
+            // extract_signal_from_event(event) tries to records a control
+            // signal (like "pushing button 3") for the current in-game control
+            // based on the user input in 'event'.  
+            //
+            // 'event' MUST already have been confirmed to be for this device
+            // with is_for_device().
+            // 
+            // If a signal can be extracted, we encode it into the current
+            // slots in the part_thingy[] arrays, and return true.  Otherwise
+            // we return false.
+            //
+            // Events that do not describe a significant movement, such as axis
+            // events within the neutral ranges, are not extracted.
+            bool extract_signal_from_event(const SDL_Event& event) {
+                switch(event.type) {
+                    case SDL_CONTROLLERAXISMOTION:
+                    case SDL_JOYAXISMOTION:
+                        int max = neutral_max[event.jaxis.id] + small_mag;
+                        int min = neutral_min[event.jaxis.id] - small_mag;
+                        int val = event.jaxis.value;
+                        if(!in_order(min, val, max) { // val must be outside neutral range for us to be interested
+                            part_kinds[curr_control] = joystick::AXIS;
+                            part_ids[curr_control] = event.jaxis.axis;
+                            part_data0[curr_control] = (val > max) ? (max + 1)   : (-large_mag);
+                            part_data1[curr_control] = (val > max) ? (large_mag) : (min - 1);
+                            return true;
+                        } else {
+                            return false;
+                        }
+                    case SDL_CONTROLLERBUTTONDOWN:
+                    case SDL_JOYBUTTONDOWN:
+                        part_kinds[curr_control] = joystick::BUTTON;
+                        part_ids[curr_control] = event.jbutton.button;
+                        part_data0[curr_control] = 0;
+                        part_data1[curr_control] = 0;
+                        return true;
+                        break;
+                    case SDL_JOYHATMOTION:
+                        if(event.jhat.value != SDL_HAT_CENTERED) {
+                            part_kinds[curr_control] = joystick::HAT;
+                            part_ids[curr_control] = event.jhat.hat;
+                            part_data0[curr_control] = event.jhat.value;
+                            part_data1[curr_control] = 0;
+                            return true;
+                        }
+                }
+            }
+*/
+
+            //bool advance() {
+            //    curr_control++;
+            //    if(curr_control >= xXX) {
+            //        curr_control--;
+            //        return false;
+            //    }
+            //    return true;
+            //}
+
+            bool retreat() {
+                curr_control--;
+                if(curr_control < 0) {
+                    curr_control++;
+                    return false;
+                }
+                return true;
+            }
+
+
+            int* get_part_kinds() {
+                return part_kinds;
+            }
+
+            int* get_part_ids() {
+                return part_ids;
+            }
+
+            int* get_part_data0() {
+                return part_data0;
+            }
+
+            int* get_part_data1() {
+                return part_data1;
+            }
+    };
+
+
     class joystick_manager {
 
         public:
@@ -1085,6 +1391,77 @@ namespace joystick {
             std::shared_ptr<player_controller> local_player_controller;
     };
 
+    // pump_events(event, already_claimed) checks the given SDL event to see if it
+    // is relevant to the joysticks we are managing.  
+    //
+    // If claimed is already true, no check is made and we return true.  Otherwise,
+    // if the event is relevant (a joystick add or remove event), the event is
+    // processed and claimed by returning true.  If checking shows the event is not
+    // relevant, the event is left unclaimed by returning false.
+    //
+    // If a joystick has been added, our joystick_manager will open it and add it
+    // to the list of available devices.
+    //
+    // If a joystick has been removed, our joystick_manager will erase it
+    // (triggering an SDL_Close()).  If the device the player is currently using is
+    // removed, the player_controller for that device will be destroyed too. 
+    bool joystick_manager::pump_events(const SDL_Event& ev, bool claimed) {
+        if(claimed) {
+            return claimed;
+        }
+       
+        // SDL generates attach and remove events for GameControllers too, but they
+        // are duplicate events on top of the joystick events SDL will generate for
+        // the underlying joysticks anyway.  So in the absence of any reason to
+        // treat GameControllers differently, we just ignore those superfluous
+        // events.
+
+        switch(ev.type) {
+            case SDL_JOYDEVICEADDED: {
+                int joy_index = ev.jdevice.which;
+                sdl_controller* new_controller = sdl_controller::open(joy_index);
+                if(!new_controller) {
+                    std::cerr << "Warning: Tried to open new joy/game controller at device INDEX " << joy_index << " ... but SDL wouldn't!" << std::endl;
+                } else {
+                    std::cerr << "INFO: Added new controller from SDL device INDEX " << joy_index << "." << std::endl;
+                    joysticks.push_back(std::shared_ptr<sdl_controller>(new_controller));
+                }
+                return true;
+            }
+
+            case SDL_JOYDEVICEREMOVED: {
+                // What a nuisance.  One of the controllers has been ripped out. Now we need to 1)
+                // rid it from the player_controller if the player was using it and 2) rid it from
+                // the joystick list.
+                SDL_JoystickID joy_id = ev.jdevice.which;
+                
+                auto iter = joysticks.begin();
+                bool did_find = false;
+                bool was_in_use = false;
+                while(iter != joysticks.end()) {
+                    if((*iter)->get_id() == joy_id) {
+                        std::shared_ptr<sdl_controller> device_in_use_now = local_player_controller->get_device();
+                        if(device_in_use_now != NULL && device_in_use_now->get_id() == joy_id) {
+                            local_player_controller->change_device(NULL);
+                            was_in_use = true;
+                        }
+                        iter = joysticks.erase(iter);
+                        did_find = true;
+                        break;
+                    } else {
+                        iter++;
+                    }
+                }
+                if(!did_find) {
+                    std::cerr << "Warning: Tried to remove controller identified as SDL instance ID " << joy_id << ", but SDL wouldn't!" << std::endl;
+                } else {
+                    std::cerr << "INFO: Removed joy/game controller identified as ID " << joy_id << (was_in_use ? ", which was in use." : ", (not in use).") << std::endl;
+                }
+                return true;
+            }
+        }
+        return false;
+    }
 
 
     namespace {
@@ -1097,6 +1474,7 @@ namespace joystick {
 
         joystick_manager* local_manager;
         player_controller* local_joystick;
+        interactive_controller_configurer* local_configurer;
         bool silent = false;
     }
 
@@ -1210,6 +1588,8 @@ namespace joystick {
         local_joystick = local_player_controller.get();
     }
 
+
+ 
 
 
 
@@ -1546,9 +1926,78 @@ namespace joystick {
 
 
 
+    //
+    // Singular interface wrappers for interactive configurer
+    //
+
+    void start_configurer() {
+        local_configurer = new interactive_controller_configurer(local_joystick->get_device());
+    }
+
+    void clear_dead_zones() {
+        if(local_joystick) {
+            local_configurer->clear_dead_zones();
+        }
+    } 
+
+    void examine_dead_zones_tick() {
+        if(local_joystick) {
+            local_configurer->dead_zones_tick();
+        }
+    }
+
+    bool dead_zones_dangerous() {
+        if(local_joystick) {
+            return local_configurer->dead_zones_dangerous();
+        }
+        return false;
+    }
+
+    void default_dead_zones() {
+        if(local_configurer) {
+            local_configurer->default_dead_zones();
+        }
+    }
+  
+    listen_result listen_for_signal() {
+        if(local_configurer) {
+            return local_configurer->listen_for_signal();
+        }
+        return still_listening; 
+    }
+
+    bool retreat() {
+        if(local_configurer) {
+            return local_configurer->retreat();
+        }
+        return false;
+    }
+   
+    void apply_configuration() {
+        if(local_configurer) {
+            local_joystick->change_mapping(
+                local_configurer->get_part_kinds(),
+                local_configurer->get_part_ids(),
+                local_configurer->get_part_data0(),
+                local_configurer->get_part_data1()
+            );
+        }
+    }
+
+    void stop_configurer() {
+        delete local_configurer;
+        local_configurer = NULL;
+    }
+
+
+    //
+    // Initialisation and update
+    //
 
 
     manager::manager() {
+        local_joystick = NULL;
+        local_configurer = NULL;
         local_manager = new joystick_manager();
         local_manager->initial_setup();
     }
@@ -1574,77 +2023,6 @@ namespace joystick {
         return local_manager->pump_events(ev, claimed);
     }
 
-    // pump_events(event, already_claimed) checks the given SDL event to see if it
-    // is relevant to the joysticks we are managing.  
-    //
-    // If claimed is already true, no check is made and we return true.  Otherwise,
-    // if the event is relevant (a joystick add or remove event), the event is
-    // processed and claimed by returning true.  If checking shows the event is not
-    // relevant, the event is left unclaimed by returning false.
-    //
-    // If a joystick has been added, our joystick_manager will open it and add it
-    // to the list of available devices.
-    //
-    // If a joystick has been removed, our joystick_manager will erase it
-    // (triggering an SDL_Close()).  If the device the player is currently using is
-    // removed, the player_controller for that device will be destroyed too. 
-    bool joystick_manager::pump_events(const SDL_Event& ev, bool claimed) {
-        if(claimed) {
-            return claimed;
-        }
-       
-        // SDL generates attach and remove events for GameControllers too, but they
-        // are duplicate events on top of the joystick events SDL will generate for
-        // the underlying joysticks anyway.  So in the absence of any reason to
-        // treat GameControllers differently, we just ignore those superfluous
-        // events.
-
-        switch(ev.type) {
-            case SDL_JOYDEVICEADDED: {
-                int joy_index = ev.jdevice.which;
-                sdl_controller* new_controller = sdl_controller::open(joy_index);
-                if(!new_controller) {
-                    std::cerr << "Warning: Tried to open new joy/game controller at device INDEX " << joy_index << " ... but SDL wouldn't!" << std::endl;
-                } else {
-                    std::cerr << "INFO: Added new controller from SDL device INDEX " << joy_index << "." << std::endl;
-                    joysticks.push_back(std::shared_ptr<sdl_controller>(new_controller));
-                }
-                return true;
-            }
-
-            case SDL_JOYDEVICEREMOVED: {
-                // What a nuisance.  One of the controllers has been ripped out. Now we need to 1)
-                // rid it from the player_controller if the player was using it and 2) rid it from
-                // the joystick list.
-                SDL_JoystickID joy_id = ev.jdevice.which;
-                
-                auto iter = joysticks.begin();
-                bool did_find = false;
-                bool was_in_use = false;
-                while(iter != joysticks.end()) {
-                    if((*iter)->get_id() == joy_id) {
-                        std::shared_ptr<sdl_controller> device_in_use_now = local_player_controller->get_device();
-                        if(device_in_use_now != NULL && device_in_use_now->get_id() == joy_id) {
-                            local_player_controller->change_device(NULL);
-                            was_in_use = true;
-                        }
-                        iter = joysticks.erase(iter);
-                        did_find = true;
-                        break;
-                    } else {
-                        iter++;
-                    }
-                }
-                if(!did_find) {
-                    std::cerr << "Warning: Tried to remove controller identified as SDL instance ID " << joy_id << ", but SDL wouldn't!" << std::endl;
-                } else {
-                    std::cerr << "INFO: Removed joy/game controller identified as ID " << joy_id << (was_in_use ? ", which was in use." : ", (not in use).") << std::endl;
-                }
-                return true;
-            }
-        }
-        return false;
-    }
 
     // Update SDL's joystick statuses.  This will circulate input events as well.
     void update() {

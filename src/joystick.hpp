@@ -82,7 +82,7 @@ namespace joystick {
 
 
     //
-    // For creating joystick-select and joystick-configure screens  
+    // For creating joystick select screens  
     //
     
     // Update device lists to reflect the controllers currently plugged into
@@ -110,9 +110,111 @@ namespace joystick {
     // above.  Use change_device(no_device) to select no joystick.
     void change_device(int device_position);
     const static int no_device = -2;         // -2 to avoid conflating with no_id
+   
+
+    //
+    // For creating joystick configure screens
+    //
+
+    // These functions support the interactive configuration screen.  The
+    // configuration screen asks the player to press each button they want to
+    // use for up, down, left, right, attack, jump etc.  The functions here are
+    // used to listen to what the player presses.
+    //
+    // Start by making sure that a valid joystick is in use (not just the
+    // keyboard), then call start_configurer().  
+    //
+    // If you want to set manual dead zones, call clear_dead_zones(), tell the
+    // player to do nothing, then repeatedly call examine_dead_zones_tick()
+    // over several milliseconds.  dead_zones_dangerous() will tell you if the
+    // dead zones look right or not - maybe the player didn't leave the sticks
+    // in a neutral position, or maybe one of them is really noisy? You can
+    // safely clear() and examine() again if you want to.
+    //
+    // Alternatively, you can avoid manual dead zones and call
+    // default_dead_zones(), if you are happy that the axes will all behave as
+    // expected. 
+    //
+    // You are now ready to grab button/hat/stick actions for each of the
+    // in-game controls in order.  Iterate over {up, down, left, ...}.  Ask the
+    // player to press the button they want for the current control ("press up
+    // now"), and as part of your engine update cycle call listen_for_signal()
+    // every tick.
+    //
+    // listen_for_signal() will return 'still_listening' until it gets a
+    // meaningful button/axis/hat press (outside the dead zone).  Eventually
+    // when the player does input something, listen_for_signal will return one
+    // of three values:
+    // - duplicate, meaning the player has tried to use the same button twice,
+    //   in which case you should tell them so and listen() again,
+    // - success_continue, meaning we got a good button/axis/hat press, and are
+    //   ready to listen() for the next control
+    // - success_finished, meaning we got a good button/axis/hat press, and
+    //   have finished going through all the controls. 
+    //
+    // After listen() returns success_finished you can call apply_configuration()
+    // to apply the configuration to the current controller.  
+    //
+    // You can go back to the previous control using retreat() at any time.
+    //
+    // Regardless, call stop_configurer() at the end to clean up.
     
-    // Change the configuration of the controller currently in use.
-    void change_mapping(const int* part_kinds, const int* part_ids, const int* part_data0, const int* part_data1);
+    // Initialise configurer.
+    void start_configurer();
+
+    // Dead zone examiners:
+    //
+    // These functions try to work out the dead zone for each axis on a
+    // controller (the range of values the axis might return when it appears to
+    // be sitting still in the neutral position).
+
+    // Clear dead zones for axes on the controller.
+    void clear_dead_zones(); 
+
+    // Successive calls to examine_dead_zones_tick will establish upper and
+    // lower bounds on where each axis sits when it is neutral.  
+    // - clear_dead_zones() must be called first.
+    // - Successive calls must be spread over an appropriate time frame.
+    // - Requires the user to leave the stick in a neutral state.
+    void examine_dead_zones_tick();
+
+    // Returns true if the dead for any axis is too big (defined as small_mag
+    // in size or larger).  Not meaningful if clear_dead_zones() and
+    // examine_dead_zones_tick() haven't been called correctly.
+    bool dead_zones_dangerous();
+
+    // Initialises the dead zones with 'best guesses' about what they are.
+    // Suitable if you know you have prior knowledge of the controller (eg a
+    // standard controller on a console).
+    void default_dead_zones();
+  
+    enum listen_result {
+        still_listening,
+        duplicate,
+        success_keep_going,
+        success_finished
+    };
+
+    // Tries to find a control signal, like the player pressing button 23, for
+    // the current in-game control.  Will return true if it was able to find
+    // and record one, or false otherwise.  Needs to be called over successive
+    // update cycles.  Calls joystick::update().
+    listen_result listen_for_signal();
+
+    // Goes back to the previous in-game control.  Returns false if you are
+    // already at the first control, true otherwise.  After retreat()ing you
+    // must listen() again to move forward and finish.
+    bool retreat();
+   
+    // Applies the created configuration to the controller that is currently in use.
+    // Causes a run time error if listen_for_signal() is not 'success_finished'.
+    void apply_configuration();
+
+    // stop_configurer() frees the underlying resources.  Can be called to 
+    // destroy the configurer at any time.  Safe to call even if no
+    // corresponding start_configurer() has happened yet.
+    void stop_configurer();
+
 
     
     //
