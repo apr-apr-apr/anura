@@ -1209,8 +1209,8 @@ namespace preferences {
             // are in the valid range, even if they are still stupid.
             joy_part_kind_[c] = joystick::validate_kind(jc_node[key_type].as_int(joystick::default_kind(c)));
             joy_part_id_[c] = joystick::validate_id(jc_node[key_id].as_int(joystick::default_id(c, joy_part_kind_[c]))); 
-            joy_part_data0_[c] = joystick::validate_data0(jc_node[key_low].as_int(joystick::default_low(c, joy_part_kind_[c])), joy_part_kind_[c]);
-            joy_part_data1_[c] = joystick::validate_data1(jc_node[key_high].as_int(joystick::default_high(c, joy_part_kind_[c]))); 
+            joy_part_data0_[c] = joystick::validate_data0(jc_node[key_low].as_int(joystick::default_data0(c, joy_part_kind_[c])), joy_part_kind_[c]);
+            joy_part_data1_[c] = joystick::validate_data1(jc_node[key_high].as_int(joystick::default_data1(c, joy_part_kind_[c]))); 
         }
 
         preferences::set_32bpp_textures_if_kb_memory_at_least( 512000 );

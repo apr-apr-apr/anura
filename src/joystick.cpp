@@ -50,9 +50,26 @@ haptic_effect_table& get_effects() {
 
 namespace joystick {
 
-    // As per header
-    const int small_mag = 4096;
-    const int large_mag = 1000000;  
+    // Useful values for defining axis ranges, neutral points and dead zones.
+    //
+    // SDL axes can occupy positions in the range [-32768, 32767].  Orientation,
+    // neutral zones and dead zones are not necessarily known.
+    //
+    // When we need a default neutral zone, we work with a single point, either
+    // zero, -32768 or 32767.
+    //
+    // When we need to work with a dead zone, we default to 4096 either side of
+    // the neutral zone (inclusive). 
+
+    namespace axval {
+        const int lowest = -32768;  
+        const int low_sentinel = lowest - 1;
+        const int zero = 0;
+        const int dead_pad = 4096;
+        const int dead_pad_ex = dead_pad + 1; // dead_pad for an exclusive range
+        const int highest = 32767;
+        const int high_sentinel = highest + 1;
+    }
 
     class sdl_controller;
         class sdl_joy_controller;
@@ -78,10 +95,10 @@ namespace joystick {
         // documentation for basic concepts.
 
         public:
-            // Start using the device at position 'device_id' in SDL's list of
-            // currently connected joysticks.  Returns NULL if the opening
-            // fails.
-            static sdl_controller* open(int device_id);
+            // Start using the device at position 'device_position' in SDL's
+            // list of currently connected joysticks.  Returns NULL if the
+            // opening fails.
+            static sdl_controller* open(int device_position);
             
             // The read_ functions return values in the same ranges as their
             // SDL equivalents.
@@ -96,7 +113,7 @@ namespace joystick {
             virtual int num_hats() = 0;
            
             // Get SDL device attributes.  get_id() returns this controller's
-            // SDL *instance* ID, which is different from the device id
+            // SDL *instance* ID, which is different to the device position 
             // parameter in open().  
             virtual SDL_JoystickID get_id() = 0; 
             virtual std::string get_guid() = 0;
@@ -109,6 +126,9 @@ namespace joystick {
             virtual bool prefer_axial_setup() = 0;
             virtual bool prefer_hatty_setup() = 0;
             virtual bool prefer_sdl_gc_setup() = 0;
+
+            // Returns true if we know the ideal neutral positions for all axes.
+            virtual bool know_neutral_points() = 0;
 
             virtual ~sdl_controller() {
             }
@@ -167,12 +187,10 @@ namespace joystick {
                 return SDL_JoystickGetAttached(joystick);
             }
            
-            // These are subjective hints about default setups.  Remember that
-            // SDL can call a d-pad anything from 4 buttons to a 9-way hat to
-            // two axes.  We just check what SDL thinks it has so later we can
-            // guess a vaguely sensible default setup.  We only prefer the gc
-            // (game controller style) setup if we are using an
-            // SDL_GameController, so that's always false in this class.
+            // These are subjective hints about default setups.  Remember that SDL can call a d-pad anything from 4 buttons to a
+            // 9-way hat to two axes.  We just check what SDL thinks it has so later we can guess a vaguely sensible default
+            // setup.  We only prefer the gc (game controller style) setup if we are using an SDL_GameController, so that's
+            // always false in this class.
             bool prefer_axial_setup() override {
                 return SDL_JoystickNumAxes(joystick) >= 2;
             }
@@ -180,6 +198,14 @@ namespace joystick {
                 return SDL_JoystickNumHats(joystick) >= 1;
             }
             bool prefer_sdl_gc_setup() override {
+                return false;
+            }
+
+            // As a general rule, if we know enough about a controller to know the neutral points of its axes, we will probably
+            // set it up as an SDL_GameController, rather than trying to recognise it here.  However, if we know that a
+            // particular platform has a highly consistent set of drivers, ie a console, we might return true here for the
+            // entire platform. 
+            bool know_neutral_points() override {
                 return false;
             }
             
@@ -262,40 +288,50 @@ namespace joystick {
                 return true;
             }
 
+            // At the time of coding, the design SDL_GameController was still
+            // being adjusted.  However, we do know that a *properly* defined
+            // SDL_GameController uses zero as the (ideal) netural point for all
+            // axes.
+            bool know_neutral_points() override {
+                return true;
+            }
+
             ~sdl_game_controller() {
                 SDL_GameControllerClose(game_controller);
             }
+
         private:
             SDL_GameController* game_controller;
             SDL_Joystick* joystick;
     };
     
-    // open(device_id) opens the device at position 'device_id' in the SDL joystick device list.
-    // If that device can function as an SDL_GameController that version is used, otherwise the
-    // SDL_Joystick version is used.  Will return NULL if the open()ing fails. 
-    sdl_controller* sdl_controller::open(int device_id) {
-        if(SDL_IsGameController(device_id)) {
-            SDL_GameController* gc = SDL_GameControllerOpen(device_id);
+    // open(device_position) opens the device at position 'device_position' in
+    // the SDL joystick device list.  If that device can function as an
+    // SDL_GameController that version is used, otherwise the SDL_Joystick
+    // version is used.  Will return NULL if the open()ing fails. 
+    sdl_controller* sdl_controller::open(int device_position) {
+        if(SDL_IsGameController(device_position)) {
+            SDL_GameController* gc = SDL_GameControllerOpen(device_position);
             if(gc == NULL) {
-                std::cerr << "Warning: Failed to open SDL_GameController at device index " << device_id << "." << std::endl;
+                std::cerr << "Warning: Failed to open SDL_GameController at device position " << device_position << "." << std::endl;
                 return NULL;
             } else {
                 SDL_Joystick* jc = SDL_GameControllerGetJoystick(gc);
                 if(jc == NULL) {
-                    std::cerr << "Warning: Failed to open SDL_GameController underlying joystick at device at index " << device_id << "." << std::endl;
+                    std::cerr << "Warning: Failed to open SDL_GameController underlying joystick at device at position " << device_position << "." << std::endl;
                     return NULL;
                 } else {
-                    std::cerr << "INFO: Opened device at index " << device_id << " as sdl_game_controller." << std::endl;
+                    std::cerr << "INFO: Opened device at position " << device_position << " as sdl_game_controller." << std::endl;
                     return new sdl_game_controller(gc, jc);
                 }
             }
         } else {
-            SDL_Joystick* jc = SDL_JoystickOpen(device_id);
+            SDL_Joystick* jc = SDL_JoystickOpen(device_position);
             if(jc == NULL) {
-                std::cerr << "Warning: Failed to open SDL_Joystick device at index " << device_id << "." << std::endl;
+                std::cerr << "Warning: Failed to open SDL_Joystick device at position " << device_position << "." << std::endl;
                 return NULL;
             } else {
-                std::cerr << "INFO: Opened device at index " << device_id << " as sdl_joy_controller." << std::endl;
+                std::cerr << "INFO: Opened device at position " << device_position << " as sdl_joy_controller." << std::endl;
                 return new sdl_joy_controller(jc);
             }
         }
@@ -445,6 +481,11 @@ namespace joystick {
         // the axis is digital, but SDL represents all axes as analogue.  So we
         // consider the player to be pressing the axis the way we want if the
         // axis's value is in the inclusive range [low, high].
+        //
+        // SDL and its underlying drivers do not necessarily account for axis
+        // orientation, ideal neutral points or dead zones.  You can often work
+        // around these issues simply by choosing 'low' and 'high' based on
+        // direct input from the user.
 
         private:
             int low;  
@@ -833,6 +874,7 @@ namespace joystick {
             // 
             // The various device->prefer_() functions are used to guess what an approriate setup might be.
             void configure_blind() {
+                using namespace axval;
 
                 if(device == NULL) {
                     return;
@@ -848,8 +890,8 @@ namespace joystick {
                             union_signal::make(
                                 real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_UP, 0, 0),
                                 union_signal::make(
-                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTY, -large_mag, -small_mag),
-                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTY, -large_mag, -small_mag)
+                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTY, lowest, -dead_pad_ex),
+                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTY, lowest, -dead_pad_ex)
                                 )
                             )
                     ); 
@@ -857,8 +899,8 @@ namespace joystick {
                             union_signal::make(
                                 real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_DOWN, 0, 0),
                                 union_signal::make(
-                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTY, small_mag, large_mag),
-                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTY, small_mag, large_mag)
+                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTY, dead_pad_ex, highest),
+                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTY, dead_pad_ex, highest)
                                 )
                             )
                     ); 
@@ -866,8 +908,8 @@ namespace joystick {
                             union_signal::make(
                                 real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_LEFT, 0, 0),
                                 union_signal::make(
-                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTX, -large_mag, -small_mag),
-                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTX, -large_mag, -small_mag)
+                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTX, lowest, -dead_pad_ex),
+                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTX, lowest, -dead_pad_ex)
                                 )
                             )
                     ); 
@@ -875,8 +917,8 @@ namespace joystick {
                             union_signal::make(
                                 real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_RIGHT, 0, 0),
                                 union_signal::make(
-                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTX, small_mag, large_mag),
-                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTX, small_mag, large_mag)
+                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTX, dead_pad_ex, highest),
+                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTX, dead_pad_ex, highest)
                                 )
                             )
                     );
@@ -898,10 +940,10 @@ namespace joystick {
                 // Case three: there's no hat, so the main stick or d-pad is probably on the first two axes.    
                 } else { // device->prefer_axial_setup() or nothing
                     std::cerr << "INFO: Using default configuration style axial_setup." << std::endl;
-                    signal_map.push_back(real_controller_signal::make(device, AXIS, 1, -large_mag, -small_mag));
-                    signal_map.push_back(real_controller_signal::make(device, AXIS, 1, small_mag, large_mag)); 
-                    signal_map.push_back(real_controller_signal::make(device, AXIS, 0, -large_mag, -small_mag));
-                    signal_map.push_back(real_controller_signal::make(device, AXIS, 0, small_mag, large_mag));
+                    signal_map.push_back(real_controller_signal::make(device, AXIS, 1, lowest, -dead_pad_ex));
+                    signal_map.push_back(real_controller_signal::make(device, AXIS, 1, dead_pad_ex, highest)); 
+                    signal_map.push_back(real_controller_signal::make(device, AXIS, 0, lowest, -dead_pad_ex));
+                    signal_map.push_back(real_controller_signal::make(device, AXIS, 0, dead_pad_ex, highest));
                     signal_map.push_back(real_controller_signal::make(device, BUTTON, 0, 0, 0)); 
                     signal_map.push_back(real_controller_signal::make(device, BUTTON, 1, 0, 0)); 
                     signal_map.push_back(real_controller_signal::make(device, BUTTON, 2, 0, 0)); 
@@ -915,28 +957,28 @@ namespace joystick {
             // Return false always if preferences::use_joystick is off.
 
             bool up() {
-                if(!preferences::use_joystick() || !device) {
+                if(!device) {
                     return false;
                 }
                 return signal_map[controls::CONTROL_UP]->is_firing();
             }
 
             bool down() {
-                if(!preferences::use_joystick() || !device) {
+                if(!device) {
                     return false;
                 }
                 return signal_map[controls::CONTROL_DOWN]->is_firing();
             }
 
             bool left() {
-                if(!preferences::use_joystick() || !device) {
+                if(!device) {
                     return false;
                 }
                 return signal_map[controls::CONTROL_LEFT]->is_firing();
             }
 
             bool right() {
-                if(!preferences::use_joystick() || !device) {
+                if(!device) {
                     return false;
                 }
                 return signal_map[controls::CONTROL_RIGHT]->is_firing();
@@ -944,7 +986,7 @@ namespace joystick {
 
             // Buttons 0, 1 and 2 correspond to CONTROL_ATTACK, CONTROL_JUMP and CONTROL_TONGUE respectively.
             bool button(int n) {
-                if(!preferences::use_joystick() || !device) {
+                if(!device) {
                     return false;
                 }
                 switch(n) {
@@ -975,20 +1017,35 @@ namespace joystick {
             int part_data0[controls::NUM_CONTROLS];
             int part_data1[controls::NUM_CONTROLS]; 
       
-            const static int MAX_AXES = 256; // Maximum number of axes SDL can have on a joystick (owing to 8 bit id field in SDL_Event) 
-            int neutral_min[MAX_AXES];
-            int neutral_max[MAX_AXES];
+            std::vector<int> neutral_min;
+            std::vector<int> neutral_max;
             
+            // inside(a, b, c) returns true if a <= b <= c and false otherwise.
+            bool inside(int a, int b, int c) {
+                if(b > c || b < a) {
+                    return false;
+                }
+                return true;
+            }
+
             // Compares the joystick part signals at positions control_one and control_two in the part_* arrays and
-            // determines if they effectively the same.  Buttons clash if their ids are the same.  Axes clash if their ids are the
-            // same and their low and high ranges cross.  Because this class only ever creates two ranges for an axis, [-large_mag,
-            // -small_mag] and [small_mag, large_mag] it is enough just to test if the low values of the two axes are the same. Hats
-            // clash if they have the same id and position (low) value. 
+            // determines if they effectively the same.  Buttons clash if their ids are the same.   Hats clash if they
+            // have the same id and position (low) value. Axes clash if their ids are the same and their low and high
+            // ranges cross. (We check the low and high points of each range fall outside the other range.) 
             bool clash(int control_one, int control_two) {
                 return  (   part_kinds[control_one] == part_kinds[control_two] 
                         &&  part_ids[control_one] == part_ids[control_two]
                         &&  (   part_kinds[control_one] == joystick::BUTTON
-                            ||  part_data0[control_one] == part_data0[control_two]
+                            ||  (   part_kinds[control_one] == joystick::HAT
+                                &&  part_data0[control_one] == part_data0[control_two]
+                                )
+                            ||  (   part_kinds[control_one] == joystick::AXIS
+                                &&  (   inside(part_data0[control_one], part_data0[control_two], part_data1[control_one]) 
+                                    ||  inside(part_data0[control_one], part_data1[control_two], part_data1[control_one])
+                                    ||  inside(part_data0[control_two], part_data0[control_one], part_data1[control_two])
+                                    ||  inside(part_data0[control_two], part_data1[control_one], part_data1[control_two])
+                                    )
+                                )
                             )
                         );
             }
@@ -1001,10 +1058,6 @@ namespace joystick {
                     ret = ret || clash(c, curr_control);
                 }
                 return ret;
-            }
-
-            bool in_order(int lo, int mid, int hi) {
-               return lo <= mid && mid <= hi;
             }
 
             listen_result check_signal(bool got_signal) {
@@ -1027,35 +1080,35 @@ namespace joystick {
 
             interactive_controller_configurer(std::shared_ptr<sdl_controller> i_device) {
                 device = i_device;
+                if(device == NULL) {
+                    ASSERT_FATAL("Cannot interactively configure NULL device.");
+                }
                 curr_control = 0;
+                neutral_max.resize(device->num_axes(), 0);
+                neutral_min.resize(device->num_axes(), 0);
             }
 
-            // Default dead zone ranges.
-            void default_dead_zones() {
-                for(int idx = 0; idx < MAX_AXES; idx++) {
-                    //if(idx < 4) {
-                        neutral_min[idx] = 0;
-                        neutral_max[idx] = 0;
-                    //} else {
-                    //    neutral_min[idx] = -large_mag;
-                    //    neutral_max[idx] = -32768;
-                    //}
+            // Default neutral zone ranges.
+            void default_neutral_zones() {
+                for(int idx = 0; idx < device->num_axes(); idx++) {
+                    neutral_min[idx] = 0;
+                    neutral_max[idx] = 0;
                 }
             }
 
-            // Initialises dead zone ranges.
-            void clear_dead_zones() {
-                for(int idx = 0; idx < MAX_AXES; idx++) {
-                    neutral_min[idx] = large_mag;
-                    neutral_max[idx] = -large_mag;
+            // Initialises neutral zone ranges.
+            void clear_neutral_zones() {
+                for(int idx = 0; idx < device->num_axes(); idx++) {
+                    neutral_min[idx] = axval::high_sentinel;
+                    neutral_max[idx] = axval::low_sentinel;
                 }
             }
 
             // Scans all axes, assuming they are sitting in a neutral position,
             // and updates the neutral ranges.  Call successively to account
             // for noisy axes.
-            void dead_zones_tick() {
-                for(int idx = 0; idx < MAX_AXES; idx++) {
+            void neutral_zones_tick() {
+                for(int idx = 0; idx < device->num_axes(); idx++) {
                     int curr_val = device->read_axis(idx);
                     if(curr_val < neutral_min[idx]) {
                         neutral_min[idx] = curr_val;
@@ -1063,68 +1116,59 @@ namespace joystick {
                     if(curr_val > neutral_max[idx]) {
                         neutral_max[idx] = curr_val;
                     }
-                    //std::cerr << "DZ " << idx << " val: " << curr_val << " " << neutral_min[idx] << " " << neutral_max[idx] << std::endl;
                 }
             }
 
             // We declare the axis to be abnormally noisy if in the (supposed)
-            // neutral position it varies by 1/16th of the total range or more.
+            // neutral position it varies by dead_pad or more.
             // This might mean the player has bumped an axis while we were
             // scanning it, so the result is dangerous.
-            bool dead_zones_dangerous() {
-                print_dead_zones();
+            bool neutral_zones_dangerous() {
+                print_neutral_zones();
                 bool abnormal = false;
-                for(int idx = 0; idx < MAX_AXES; idx++) {
-                    abnormal = abnormal || (neutral_max[idx] - neutral_min[idx] >= small_mag);
+                for(int idx = 0; idx < device->num_axes(); idx++) {
+                    abnormal = abnormal || (neutral_max[idx] - neutral_min[idx] >= axval::dead_pad);
                 }
                 return abnormal;
             }
 
-            void print_dead_zones() {
+            void print_neutral_zones() {
+                using namespace axval;
                 std::cerr << "===Axis Neutral Zones===" << std::endl;
-                std::cerr << "(axis, dead zone min, dead zone max)" << std::endl;
                 for(int idx = 0; idx < device->num_axes(); idx++) {
-                    std::cerr << "(" << idx << ", " << neutral_min[idx] << ", " << neutral_max[idx] << ")" << std::endl;
+                    std::cerr   << "axis " << idx << ": [" << neutral_min[idx] << ", " << neutral_max[idx] 
+                                << "] for dead zone of [" << neutral_min[idx] - dead_pad << ", " 
+                                << neutral_max[idx] + dead_pad << "]." << std::endl;
                 }
-                std::cerr << "Dead zones are defined by padding neutral zones by " << small_mag << " either side." << std::endl;
+                std::cerr << "Dead zones are defined by padding neutral zones by " << dead_pad << " either side." << std::endl;
+                std::cerr << "Edit preferences.cfg directly to set completely arbitrary active input ranges." << std::endl;
+                std::cerr << "------------------------" << std::endl;
             }
-/*
-            // is_for_device(event) returns true if the given event is 1) for
-            // the sdl_controller device we are configuring, and 2) potentially
-            // interesting.
-            bool is_for_device(const SDL_Event& event) {
-                switch(event.type) {
-                    case SDL_CONTROLLERAXISMOTION:
-                    case SDL_JOYAXISMOTION:
-                        return (event.jaxis.which == device->get_id());
-                    case SDL_CONTROLLERBUTTONDOWN:
-                    case SDL_JOYBUTTONDOWN:
-                        return (event.jbutton.which == device->get_id());
-                    case SDL_JOYHATMOTION:
-                        return (event.jhat.which == device->get_id());
-            }
-*/
+
 
             listen_result listen_for_signal() {
+                using namespace axval;
+
                 update();
                 
                 // See if there is anything interesting on the axes.
                 for(int idx = 0; idx < device->num_axes(); idx++) {
-                    int max = neutral_max[idx] + small_mag;
-                    int min = neutral_min[idx] - small_mag;
+                    int high_active_start = neutral_max[idx] + dead_pad_ex;
+                    int low_active_start = neutral_min[idx] - dead_pad_ex;
                     int val = device->read_axis(idx);
-                    if(!in_order(min, val, max)) {
+                    if(val <= low_active_start) {
                         part_kinds[curr_control] = joystick::AXIS;
                         part_ids[curr_control] = idx;
-                        part_data0[curr_control] = (val > max) ? (max + 1)   : (-large_mag);
-                        part_data1[curr_control] = (val > max) ? (large_mag) : (min - 1);
-                        std::cerr << "AXIS HIT " << idx << " "  << val << " " << min << " " << max << std::endl;
+                        part_data0[curr_control] = lowest;
+                        part_data1[curr_control] = low_active_start;
                         return check_signal(true);
-                    } else {
-                        if(val != 0) {
-                            //std::cerr << "AXIS MISS " << idx << " " << val << std::endl;
-                        }
-                    }    
+                    } else if(val >= high_active_start) {
+                        part_kinds[curr_control] = joystick::AXIS;
+                        part_ids[curr_control] = idx;
+                        part_data0[curr_control] = high_active_start;
+                        part_data1[curr_control] = highest;
+                        return check_signal(true);
+                    } 
                 }
 
                 // The buttons
@@ -1152,64 +1196,7 @@ namespace joystick {
 
                 return check_signal(false);
             }
-/*
-            // extract_signal_from_event(event) tries to records a control
-            // signal (like "pushing button 3") for the current in-game control
-            // based on the user input in 'event'.  
-            //
-            // 'event' MUST already have been confirmed to be for this device
-            // with is_for_device().
-            // 
-            // If a signal can be extracted, we encode it into the current
-            // slots in the part_thingy[] arrays, and return true.  Otherwise
-            // we return false.
-            //
-            // Events that do not describe a significant movement, such as axis
-            // events within the neutral ranges, are not extracted.
-            bool extract_signal_from_event(const SDL_Event& event) {
-                switch(event.type) {
-                    case SDL_CONTROLLERAXISMOTION:
-                    case SDL_JOYAXISMOTION:
-                        int max = neutral_max[event.jaxis.id] + small_mag;
-                        int min = neutral_min[event.jaxis.id] - small_mag;
-                        int val = event.jaxis.value;
-                        if(!in_order(min, val, max) { // val must be outside neutral range for us to be interested
-                            part_kinds[curr_control] = joystick::AXIS;
-                            part_ids[curr_control] = event.jaxis.axis;
-                            part_data0[curr_control] = (val > max) ? (max + 1)   : (-large_mag);
-                            part_data1[curr_control] = (val > max) ? (large_mag) : (min - 1);
-                            return true;
-                        } else {
-                            return false;
-                        }
-                    case SDL_CONTROLLERBUTTONDOWN:
-                    case SDL_JOYBUTTONDOWN:
-                        part_kinds[curr_control] = joystick::BUTTON;
-                        part_ids[curr_control] = event.jbutton.button;
-                        part_data0[curr_control] = 0;
-                        part_data1[curr_control] = 0;
-                        return true;
-                        break;
-                    case SDL_JOYHATMOTION:
-                        if(event.jhat.value != SDL_HAT_CENTERED) {
-                            part_kinds[curr_control] = joystick::HAT;
-                            part_ids[curr_control] = event.jhat.hat;
-                            part_data0[curr_control] = event.jhat.value;
-                            part_data1[curr_control] = 0;
-                            return true;
-                        }
-                }
-            }
-*/
 
-            //bool advance() {
-            //    curr_control++;
-            //    if(curr_control >= xXX) {
-            //        curr_control--;
-            //        return false;
-            //    }
-            //    return true;
-            //}
 
             bool retreat() {
                 curr_control--;
@@ -1219,7 +1206,6 @@ namespace joystick {
                 }
                 return true;
             }
-
 
             int* get_part_kinds() {
                 return part_kinds;
@@ -1738,25 +1724,26 @@ namespace joystick {
         }
     }
 
-    int default_low(int curr_control, int kind) {
+    int default_data0(int curr_control, int kind) {
         using namespace controls;
+        using namespace axval;
         switch(kind) {
             case AXIS:
                 switch(curr_control) {
                     case CONTROL_UP:
-                        return -large_mag;
+                        return lowest;
                     case CONTROL_DOWN:
-                        return small_mag;
+                        return dead_pad_ex;
                     case CONTROL_LEFT:
-                        return -large_mag;
+                        return lowest;
                     case CONTROL_RIGHT:
-                        return small_mag;
+                        return dead_pad_ex;
                     case CONTROL_ATTACK:
-                        return -large_mag;
+                        return dead_pad_ex;
                     case CONTROL_JUMP:
-                        return -large_mag;
+                        return dead_pad_ex;
                     case CONTROL_TONGUE:
-                        return -large_mag;
+                        return dead_pad_ex;
                     default:
                         ASSERT_FATAL("curr_control out of range.");
                 }
@@ -1789,25 +1776,26 @@ namespace joystick {
         }
     }
 
-    int default_high(int curr_control, int kind) {
+    int default_data1(int curr_control, int kind) {
         using namespace controls;
+        using namespace axval;
         switch(kind) {
             case AXIS:
                 switch(curr_control) {
                     case CONTROL_UP:
-                        return -small_mag;
+                        return -dead_pad_ex;
                     case CONTROL_DOWN:
-                        return large_mag;
+                        return highest;
                     case CONTROL_LEFT:
-                        return -small_mag;
+                        return -dead_pad_ex;
                     case CONTROL_RIGHT:
-                        return large_mag;
+                        return highest;
                     case CONTROL_ATTACK:
-                        return -small_mag;
+                        return highest;
                     case CONTROL_JUMP:
-                        return -small_mag;
+                        return highest;
                     case CONTROL_TONGUE:
-                        return -small_mag;
+                        return highest;
                     default:
                         ASSERT_FATAL("curr_control out of range.");
                 }
@@ -1927,54 +1915,63 @@ namespace joystick {
 
 
     //
-    // Singular interface wrappers for interactive configurer
+    // Singular interface wrappers for interactive configurer.  See header file.
     //
 
     void start_configurer() {
-        local_configurer = new interactive_controller_configurer(local_joystick->get_device());
-    }
-
-    void clear_dead_zones() {
-        if(local_joystick) {
-            local_configurer->clear_dead_zones();
-        }
-    } 
-
-    void examine_dead_zones_tick() {
-        if(local_joystick) {
-            local_configurer->dead_zones_tick();
+        if(local_joystick && local_joystick->get_device()) {
+            local_configurer = new interactive_controller_configurer(local_joystick->get_device());
         }
     }
 
-    bool dead_zones_dangerous() {
+    bool neutral_zones_known() {
         if(local_joystick) {
-            return local_configurer->dead_zones_dangerous();
+            return local_joystick->get_device()->know_neutral_points();
         }
         return false;
     }
 
-    void default_dead_zones() {
-        if(local_configurer) {
-            local_configurer->default_dead_zones();
+    void clear_neutral_zones() {
+        if(local_joystick && local_configurer) {
+            local_configurer->clear_neutral_zones();
+        }
+    } 
+
+    void examine_neutral_zones_tick() {
+        if(local_joystick && local_configurer) {
+            local_configurer->neutral_zones_tick();
+        }
+    }
+
+    bool neutral_zones_dangerous() {
+        if(local_joystick && local_configurer) {
+            return local_configurer->neutral_zones_dangerous();
+        }
+        return false;
+    }
+
+    void default_neutral_zones() {
+        if(local_joystick && local_configurer) {
+            local_configurer->default_neutral_zones();
         }
     }
   
     listen_result listen_for_signal() {
-        if(local_configurer) {
+        if(local_joystick && local_configurer) {
             return local_configurer->listen_for_signal();
         }
         return still_listening; 
     }
 
     bool retreat() {
-        if(local_configurer) {
+        if(local_joystick && local_configurer) {
             return local_configurer->retreat();
         }
         return false;
     }
    
     void apply_configuration() {
-        if(local_configurer) {
+        if(local_joystick && local_configurer) {
             local_joystick->change_mapping(
                 local_configurer->get_part_kinds(),
                 local_configurer->get_part_ids(),

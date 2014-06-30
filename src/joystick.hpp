@@ -118,28 +118,30 @@ namespace joystick {
 
     // These functions support the interactive configuration screen.  The
     // configuration screen asks the player to press each button they want to
-    // use for up, down, left, right, attack, jump etc.  The functions here are
-    // used to listen to what the player presses.
+    // use for up, down, left, right, attack, jump etc.  
+    //
+    // These functions must be called in order described, otherwise they will
+    // silently fail.
     //
     // Start by making sure that a valid joystick is in use (not just the
     // keyboard), then call start_configurer().  
     //
-    // If you want to set manual dead zones, call clear_dead_zones(), tell the
-    // player to do nothing, then repeatedly call examine_dead_zones_tick()
-    // over several milliseconds.  dead_zones_dangerous() will tell you if the
-    // dead zones look right or not - maybe the player didn't leave the sticks
-    // in a neutral position, or maybe one of them is really noisy? You can
-    // safely clear() and examine() again if you want to.
+    // First you need to establish neutral ranges for each axis on the
+    // controller.  If you are lucky neutral_zones_known() will be true, and
+    // you can simply call default_neutral_zones().  Otherwise you will need to
+    // establish them manually: Call clear_neutral_zones(), tell the player to
+    // do nothing, then repeatedly call examine_neutral_zones_tick() over
+    // several milliseconds.  After that, neutral_zones_dangerous() will tell
+    // you if the neutral zones look right or not - maybe the player didn't
+    // leave the sticks in a neutral position, or maybe one of them is really
+    // noisy? You can safely clear() and examine() again if you want to.
+    // Whatever method you use, once you have established the neutral ranges, a
+    // dead zone will automatically be padded around each one. 
     //
-    // Alternatively, you can avoid manual dead zones and call
-    // default_dead_zones(), if you are happy that the axes will all behave as
-    // expected. 
-    //
-    // You are now ready to grab button/hat/stick actions for each of the
-    // in-game controls in order.  Iterate over {up, down, left, ...}.  Ask the
-    // player to press the button they want for the current control ("press up
-    // now"), and as part of your engine update cycle call listen_for_signal()
-    // every tick.
+    // Now you are ready to start assigning controller actions to game actions.
+    // Iterate over {up, down, left, ... jump...}.  Ask the player to press the
+    // button they want for the current control ("press up now"), and as part
+    // of your engine update cycle call listen_for_signal() every tick.
     //
     // listen_for_signal() will return 'still_listening' until it gets a
     // meaningful button/axis/hat press (outside the dead zone).  Eventually
@@ -157,36 +159,41 @@ namespace joystick {
     //
     // You can go back to the previous control using retreat() at any time.
     //
-    // Regardless, call stop_configurer() at the end to clean up.
-    
+    // Call stop_configurer() at any time to finish and release resources.
+   
+
     // Initialise configurer.
     void start_configurer();
 
-    // Dead zone examiners:
+    // Neutral zone examiners:
     //
-    // These functions try to work out the dead zone for each axis on a
+    // These functions try to work out the neutral zone for each axis on a
     // controller (the range of values the axis might return when it appears to
     // be sitting still in the neutral position).
 
-    // Clear dead zones for axes on the controller.
-    void clear_dead_zones(); 
+    // Returns true if the neutral zones for the controller are known and can
+    // be set by default_neutral_zones().  This places a lot of trust in the
+    // accuracy of driver software, so interpret with caution.
+    bool neutral_zones_known();
 
-    // Successive calls to examine_dead_zones_tick will establish upper and
+    // Clear neutral zones for axes on the controller.
+    void clear_neutral_zones(); 
+
+    // Successive calls to examine_neutral_zones_tick will establish upper and
     // lower bounds on where each axis sits when it is neutral.  
-    // - clear_dead_zones() must be called first.
+    // - clear_neutral_zones() must be called first.
     // - Successive calls must be spread over an appropriate time frame.
     // - Requires the user to leave the stick in a neutral state.
-    void examine_dead_zones_tick();
+    void examine_neutral_zones_tick();
 
-    // Returns true if the dead for any axis is too big (defined as small_mag
-    // in size or larger).  Not meaningful if clear_dead_zones() and
-    // examine_dead_zones_tick() haven't been called correctly.
-    bool dead_zones_dangerous();
+    // Returns true if the neutral range for any axis is too big (defined as
+    // small_mag in size or larger).  
+    bool neutral_zones_dangerous();
 
-    // Initialises the dead zones with 'best guesses' about what they are.
+    // Initialises the neutral zones with 'best guesses' about what they are.
     // Suitable if you know you have prior knowledge of the controller (eg a
     // standard controller on a console).
-    void default_dead_zones();
+    void default_neutral_zones();
   
     enum listen_result {
         still_listening,
@@ -196,9 +203,9 @@ namespace joystick {
     };
 
     // Tries to find a control signal, like the player pressing button 23, for
-    // the current in-game control.  Will return true if it was able to find
-    // and record one, or false otherwise.  Needs to be called over successive
-    // update cycles.  Calls joystick::update().
+    // the current in-game control.  See documentation above for return value.
+    // Needs to be called over successive update cycles.  Calls
+    // joystick::update().
     listen_result listen_for_signal();
 
     // Goes back to the previous in-game control.  Returns false if you are
@@ -228,20 +235,13 @@ namespace joystick {
         HAT
     };
 
-    // Our default joystick axis range values:  We consider an axis to be active on
-    // the negative side when it is in the range [-large_mag, -small_mag], inactive
-    // in the dead zone when it is in the range (-small_mag, small_mag) and active
-    // on the positive side in the range [small_mag, large_mag].
-    extern const int small_mag;
-    extern const int large_mag;
-
     // Return somewhat sensible default values for joystick configuration in
     // preferences::.  Refer to joystick.cpp for a detailed explanation of how
     // joystick configuration preferences are encoded.
     int default_kind(int curr_control);
     int default_id(int curr_control, int kind);
-    int default_low(int curr_control, int kind);
-    int default_high(int curr_control, int kind);
+    int default_data0(int curr_control, int kind);
+    int default_data1(int curr_control, int kind);
 
     // Ensure that joystick configuration preference encodings are in legal
     // ranges for their data type.  Valid range for data0 depends on the 

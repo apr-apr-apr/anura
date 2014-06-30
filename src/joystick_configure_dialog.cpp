@@ -84,9 +84,9 @@ namespace {
             // Our states.
             enum State {
                 welcome,                // Brief pause at start
-                dead_zone_start,        // Saying "Please leave your controller still and press Okay to start"
-                getting_dead_zone,      // Saying "Please leave the controller still now"
-                lively_dead_zone,       // Saying "Your dead zone is lively."
+                neutral_zone_start,     // Saying "Please leave your controller still and press Okay to start"
+                getting_neutral_zone,   // Saying "Please leave the controller still now"
+                lively_neutral_zone,    // Saying "Your neutral zone is lively."
                 getting_button,         // Saying "Press the button for JUMP" 
                 already_used,           // Telling user they used same button twice.
                 confirming_got_button,  // Telling user their button press was received.
@@ -109,6 +109,7 @@ namespace {
             int curr_control;           // Which in-game control we are up to.
             State state;                // The current state.  Must only be changed by calling start_new_state().
             joystick::listen_result result; // Result of trying to fetch a controller press from the user.
+            bool do_neutral_check; // Whether we ask the player to set the neutral positions of the axes.
 
             // Other gui components we need to affect
             gui::button* okay_button;
@@ -136,6 +137,7 @@ namespace {
                 finger_image = finger_in;
                 tick = 0;
                 finger_tick = 0;
+                do_neutral_check = false;
                 start_new_state(welcome);
             }
 
@@ -154,15 +156,15 @@ namespace {
             }
 
             // Backtracks to the previous in-game control (in case you make a mistake mid configuration), or even to the
-            // dead-zone analysis step.
+            // neutral-zone analysis step.
             void back_one_control() {
                 // disable okay, finger
                 if(curr_control != 0) {
                     curr_control--;
                     joystick::retreat();
                     start_new_state(getting_button);
-                } else {
-                    start_new_state(dead_zone_start);
+                } else if(curr_control == 0 && do_neutral_check) {
+                    start_new_state(neutral_zone_start);
                 }
             } 
 
@@ -173,9 +175,9 @@ namespace {
                 if(state == finished) {
                     effect_remap();
                     end_dialog(d);
-                } else if(state == dead_zone_start) {
-                    start_new_state(getting_dead_zone);
-                } else if(state == lively_dead_zone) {
+                } else if(state == neutral_zone_start) {
+                    start_new_state(getting_neutral_zone);
+                } else if(state == lively_neutral_zone) {
                     start_new_state(getting_button);
                 }
             }
@@ -197,16 +199,20 @@ namespace {
             enum State next_state(State state) {
                 switch(state) {
                     case welcome:
-                        return dead_zone_start;
-                    case dead_zone_start:
-                        return getting_dead_zone;
-                    case getting_dead_zone:
-                        if(joystick::dead_zones_dangerous()) {
-                            return lively_dead_zone;
+                        if(do_neutral_check) {
+                            return neutral_zone_start;
                         } else {
                             return getting_button;
                         }
-                    case lively_dead_zone:
+                    case neutral_zone_start:
+                        return getting_neutral_zone;
+                    case getting_neutral_zone:
+                        if(joystick::neutral_zones_dangerous()) {
+                            return lively_neutral_zone;
+                        } else {
+                            return getting_button;
+                        }
+                    case lively_neutral_zone:
                         return getting_button;
                     case getting_button:
                         return confirming_got_button;
@@ -235,6 +241,7 @@ namespace {
                         tick = 60;
                         curr_control = 0;
                         joystick::start_configurer();
+                        do_neutral_check = !joystick::neutral_zones_known();
                         set_text("\n \nStarting...");
                         okay_button->enable(true); // XXX widget.hpp coding bug: enable(true) is actually disable(true).
                         okay_label->enable(true); 
@@ -242,22 +249,21 @@ namespace {
                         previous_label->enable(true);
                         finger_image->set_visible(false);
                         break;
-                    case dead_zone_start:
+                    case neutral_zone_start:
                         tick = 0;
                         okay_button->enable(false);
                         okay_label->enable(false);
                         previous_button->enable(true);
                         previous_label->enable(true);
                         finger_image->set_visible(false);
-                        joystick::clear_dead_zones();
-                        //set_text("Rgone\ngRtwo\nRgthree\ngRfour\nRgfive\ngRsix\nRgseven\ngReight\nnine");
+                        joystick::clear_neutral_zones();
                         set_text(   "First we need to calibrate the neutral\n"
                                     "positions on your controller.\n"
                                     " \n"
                                     "Please press NOTHING on your controller,\n"
                                     "and select Okay to start.");
                         break;
-                    case getting_dead_zone:
+                    case getting_neutral_zone:
                         tick = 120;
                         finger_tick = 10;
                         okay_button->enable(true); 
@@ -270,7 +276,7 @@ namespace {
                                     " \n"
                                     "Please press NOTHING.\n");
                         break;
-                    case lively_dead_zone:
+                    case lively_neutral_zone:
                         tick = 0;
                         okay_button->enable(false);
                         okay_label->enable(false);
@@ -288,8 +294,13 @@ namespace {
                         finger_tick = 10;
                         okay_button->enable(true); 
                         okay_label->enable(true);
-                        previous_button->enable(false);
-                        previous_label->enable(false);
+                        if(curr_control > 0 || do_neutral_check) {
+                            previous_button->enable(false);
+                            previous_label->enable(false);
+                        } else {
+                            previous_button->enable(true);
+                            previous_label->enable(true);
+                        }
                         set_text(   " \n"
                                     " \n"
                                     "Please press [" + std::string(controls::control_names()[curr_control]) + "] now.");
@@ -333,7 +344,7 @@ namespace {
              
                 // If 'tick' is above zero, it is counting down every update
                 // cycle, and when it hits zero it sparks a transition to the
-                // next state.  The getting_dead_zone state listens to the
+                // next state.  The getting_neutral_zone state listens to the
                 // joystick every tick for a fixed time period.
                 if(tick > 0) {
                     tick--;
@@ -341,18 +352,18 @@ namespace {
                         start_new_state(next_state(state));
                     }
             
-                    if(state == getting_dead_zone) {
+                    if(state == getting_neutral_zone) {
                         finger_tick--;
                         if(finger_tick <= 0) {
                             finger_tick = 10;
                             finger_image->set_visible(!finger_image->visible());
                         }
-                        // The state getting_dead_zone lasts some time, but we
+                        // The state getting_neutral_zone lasts some time, but we
                         // only check the dead zone towards the end.  This
                         // gives the user a few extra ticks to release all the
                         // buttons. 
                         if(tick < 60) {
-                            joystick::examine_dead_zones_tick();
+                            joystick::examine_neutral_zones_tick();
                         }
                     }
                 } else {
