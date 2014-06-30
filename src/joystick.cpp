@@ -1488,6 +1488,7 @@ namespace joystick {
             // inbuilt db (from whenever SDL was compiled, maybe ages ago) and load
             // the user's own SDL_GameController configuration database, if it
             // exists
+            // XXX temporary code so we can use older SDL with Mac OS
 #if !TARGET_OS_MAC
             std::string user_sdl_gamecontroller_db = std::string(preferences::user_data_path()) + "/sdl_gamecontrollerdb.txt";
             if(sys::file_exists(user_sdl_gamecontroller_db)) {
