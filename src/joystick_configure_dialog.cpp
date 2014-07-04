@@ -238,7 +238,7 @@ namespace {
                 state = new_state;
                 switch(state) {
                     case welcome:
-                        tick = 60;
+                        tick = 30;
                         curr_control = 0;
                         joystick::start_configurer();
                         do_neutral_check = !joystick::neutral_zones_known();
@@ -328,10 +328,11 @@ namespace {
                         tick = 0;
                         okay_button->enable(false);
                         okay_label->enable(false);
-                        set_text(   " \n"
-                                    "All done!\n"
+                        set_text(   "All done!\n"
                                     " \n"
-                                    "Press Okay to save.\n");
+                                    "Press Okay to save.\n"
+                                    " \n"
+                                    "This will overwrite any old saved configuration.");
                         break;
                     case aborted:
                         break;

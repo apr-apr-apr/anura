@@ -17,6 +17,7 @@
 #include <boost/bind.hpp>
 
 #include "button.hpp"
+#include "checkbox.hpp"
 #include "controls_dialog.hpp"
 #include "controller_select_dialog.hpp"
 #include "dialog.hpp"
@@ -79,6 +80,10 @@ namespace {
     // Human readable joystick names and their SDL instance ids.
     std::shared_ptr<std::vector<std::string>> joystick_names;
     std::shared_ptr<std::vector<SDL_JoystickID>> joystick_ids;
+
+    // Checkboxes for default and saved config on controller select dialog
+    gui::checkbox* default_config_check;
+    gui::checkbox* saved_config_check;
 
 
 
@@ -186,6 +191,48 @@ namespace {
 
 }
 
+    // Default config checkbox click.
+void default_clicked() {
+    joystick::use_default_config();
+    saved_config_check->set_checked(false);
+}
+
+    // Saved config checkbox click.
+void saved_clicked() {
+    joystick::use_preferences_config();
+    default_config_check->set_checked(false);
+}
+
+    // Sets up the joystick configuration checkboxes so that they are disabled and invisible when the keyboard is
+    // selected.
+void synchronise_checkboxes_keyboard() {
+    default_config_check->enable(true);
+    default_config_check->set_visible(false);
+    saved_config_check->enable(true);
+    saved_config_check->set_visible(false);
+}
+
+    // Sets up the joystick configuration checkboxes for when a joystick is selected.
+    //
+    // We only enable them both when the user can choose between the saved configuration and the default.  We hide the
+    // 'saved' checkbox when it is not available.  The default is visible but disabled.
+void synchronise_checkboxes_joystick() {
+    if(joystick::can_use_preferences_config()) {
+        default_config_check->enable(false);
+        default_config_check->set_visible(true);
+        saved_config_check->enable(false);
+        saved_config_check->set_visible(true);
+        bool default_on = joystick::using_default_config();
+        default_config_check->set_checked(default_on);
+        saved_config_check->set_checked(!default_on);
+    } else {
+        default_config_check->enable(true);
+        default_config_check->set_visible(true);
+        default_config_check->set_checked(true);
+        saved_config_check->enable(true);
+        saved_config_check->set_visible(false);
+    }
+}
 
 void show_controller_select_dialog()
 {
@@ -217,16 +264,26 @@ void show_controller_select_dialog()
 	
     // Labels for buttons etc
     widget_ptr return_label;
-	widget_ptr configure_label;
+	widget_ptr configure_button_label;
 	widget_ptr select_label;
+	widget_ptr configure_check_label;
+    widget_ptr default_label;
+    widget_ptr saved_label;
 
     select_label = widget_ptr(new graphical_font_label(_("Select Input Device"), "door_label", 2));
-    configure_label = widget_ptr(new graphical_font_label(_("Configure"), "door_label", 2));
+    configure_button_label = widget_ptr(new graphical_font_label(_("Configure"), "door_label", 2));
     return_label = widget_ptr(new graphical_font_label(_("Return to Pause Menu"), "door_label", 2));
 
+    configure_check_label = widget_ptr(new graphical_font_label(_("Configuration: "), "door_label", 2)); 
+    default_label = widget_ptr(new graphical_font_label(_("Default"), "door_label", 2)); 
+    saved_label = widget_ptr(new graphical_font_label(_("Saved"), "door_label", 2));
+
 	ASSERT_LOG(return_label != NULL, "Couldn't create return label widget.");
-	ASSERT_LOG(configure_label != NULL, "Couldn't create configure label widget.");
+	ASSERT_LOG(configure_button_label != NULL, "Couldn't create configure label widget.");
 	ASSERT_LOG(select_label != NULL, "Couldn't create select label widget.");
+	ASSERT_LOG(configure_check_label != NULL, "Couldn't create configure check label widget.");
+	ASSERT_LOG(default_label != NULL, "Couldn't create default label widget.");
+	ASSERT_LOG(saved_label != NULL, "Couldn't create saved label widget.");
 
     // Dialog itself - width and height calculations illustrate layout.
 	int window_w = outer_padding + button_width + outer_padding;
@@ -235,6 +292,8 @@ void show_controller_select_dialog()
                     + padding 
                     + dropdown_height   // Drop-down with controllers listed
                     + padding 
+                    + label_height     // Configuration: [ ] Default [ ] Saved
+                    + padding
                     + button_height     // Configure
                     + padding 
                     + button_height     // Return to Pause screen
@@ -251,10 +310,21 @@ void show_controller_select_dialog()
 	d.set_draw_background_fn(do_draw_scene);
 
     // Buttons
-	widget_ptr configure_button(new button(configure_label, show_configure_dialog, BUTTON_STYLE_NORMAL, button_resolution));
+	widget_ptr configure_button(
+        new button( configure_button_label, 
+                    []() { show_configure_dialog(); synchronise_checkboxes_joystick(); }, 
+                    BUTTON_STYLE_NORMAL, 
+                    button_resolution)
+    );
 	widget_ptr return_button(new button(return_label, boost::bind(end_dialog, &d), BUTTON_STYLE_NORMAL, button_resolution));
 	configure_button->set_dim(button_width, button_height);
 	return_button->set_dim(button_width, button_height);
+
+    // Check boxes
+    default_config_check = new checkbox(default_label, false, boost::bind(&default_clicked));
+    saved_config_check = new checkbox(saved_label, false, boost::bind(&saved_clicked));
+    widget_ptr default_config(default_config_check);
+    widget_ptr saved_config(saved_config_check);
 
     // Assemble the dropdown list of controllers.  
     //
@@ -278,11 +348,13 @@ void show_controller_select_dialog()
     int current_device_dropdown_position;
     if(joystick::current_device_id() == joystick::no_id) { //XXX!preferences::use_joystick()) {
         current_device_dropdown_position = 0;
+        synchronise_checkboxes_keyboard();
     } else {
         current_device_dropdown_position = 0;
         for(int j = 0; j < joystick_ids->size(); j++) {
             if((*joystick_ids)[j] == joystick::current_device_id()) {
                 current_device_dropdown_position = j;
+                synchronise_checkboxes_joystick();
                 break;
             }
         }
@@ -301,11 +373,13 @@ void show_controller_select_dialog()
                     joystick::change_device(joystick::no_device);
                     joystick::set_joystick_selection_preferences();
                     ret = joystick::no_device;
+                    synchronise_checkboxes_keyboard();
                 } else {
                     //preferences::set_use_joystick(true);
                     joystick::change_device(selection - 1);
                     joystick::set_joystick_selection_preferences();
                     ret = selection - 1;
+                    synchronise_checkboxes_joystick();
                 }
             }
     );
@@ -315,8 +389,11 @@ void show_controller_select_dialog()
     if(show_select) {
         d.add_widget(select_label, outer_padding, outer_padding);
         d.add_widget(select_dropdown);
+        d.add_widget(configure_check_label, dialog::MOVE_RIGHT);
+        d.add_widget(default_config, dialog::MOVE_RIGHT);
+        d.add_widget(saved_config);
     }
-    d.add_widget(configure_button);
+    d.add_widget(configure_button, outer_padding, outer_padding + label_height + padding + dropdown_height + padding + label_height + padding);
     if(show_return) {
         d.add_widget(return_button);
     }

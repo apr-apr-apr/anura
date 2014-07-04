@@ -769,15 +769,24 @@ namespace joystick {
             // When in use this vector should always have controls::NUM_CONTROLS elements.
             std::vector<std::shared_ptr<controller_signal>> signal_map;
 
+            // Whether this controller's configuration, as defined by signal_map, was created by default here (true)
+            // or created externally (ie from preferences or a config screen) (false).
+            bool default_config;
+
         public:
             player_controller() {
                 device = NULL;
                 signal_map.clear();
+                default_config = true;
             }
 
             // get_device() shares ownership of the returned device.
             std::shared_ptr<sdl_controller> get_device() {
                 return device;
+            }
+
+            bool is_default_config() {
+                return default_config;
             }
 
             // Overwrites signal_map with controller_signals created from the user
@@ -795,6 +804,7 @@ namespace joystick {
                             preferences::joy_part_id(c), preferences::joy_part_data0(c), preferences::joy_part_data1(c))
                     ); 
                 }
+                default_config = false;
             }
 
             // Updates the preferences::joystick_something variables indicate
@@ -860,6 +870,7 @@ namespace joystick {
                     return;
                 }
                 std::cerr << "INFO: Using altered controller configuration." << std::endl;
+                default_config = false;
                 signal_map.clear();
                 for(int c = 0; c < controls::NUM_CONTROLS; c++) {
                     signal_map.push_back(
@@ -879,7 +890,9 @@ namespace joystick {
                 if(device == NULL) {
                     return;
                 }
-               
+              
+                default_config = true;
+
                 signal_map.clear();
                  
                 // Case one:  we are using a virtual XBox360 controller that SDL_GameController has set up.
@@ -1458,9 +1471,9 @@ namespace joystick {
         // destructors before we try calling SDL_Quit or anything else that will
         // invalidate calls to SDL_ThingyClose().
 
-        joystick_manager* local_manager;
-        player_controller* local_joystick;
-        interactive_controller_configurer* local_configurer;
+        joystick_manager* local_manager = NULL;
+        player_controller* local_joystick = NULL;
+        interactive_controller_configurer* local_configurer = NULL;
         bool silent = false;
     }
 
@@ -1476,6 +1489,8 @@ namespace joystick {
             // We can pretty much abandon hope of using a joystick now.  Just
             // create a non-functional player_controller and leave.
             local_player_controller = std::make_shared<player_controller>();
+            local_joystick = local_player_controller.get();
+            local_configurer = NULL;
             return;
         }
 
@@ -1573,6 +1588,7 @@ namespace joystick {
 
         // Hacky way to link in to the singular interface.
         local_joystick = local_player_controller.get();
+        local_configurer = NULL;
     }
 
 
@@ -1859,6 +1875,25 @@ namespace joystick {
     SDL_JoystickID current_device_id() {
         return local_manager->device_id();
     }
+
+    bool using_default_config() {
+        return local_joystick->is_default_config();
+    }
+
+    bool can_use_preferences_config() {
+        if(!local_joystick->get_device()) {
+            return false;
+        }
+        return (preferences::configured_joystick_guid() == local_joystick->get_device()->get_guid());
+    }
+
+    void use_preferences_config() {
+       local_joystick->configure_from_preferences();
+    }
+
+    void use_default_config() {
+       local_joystick->configure_blind();
+    } 
 
     //
     // Singular to player_controller calls.  See header and player_controller documentation.

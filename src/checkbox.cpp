@@ -112,6 +112,19 @@ void checkbox::click(bool checked)
 	}
 }
 
+// Sets the check value without triggering click event chain.
+void checkbox::set_checked(bool checked) {
+	checked_ = checked;
+	const int w = width();
+	const int h = height();
+	if(label_widget_) {
+		set_label(create_checkbox_widget(label_widget_, checked_, button_resolution(), hpadding_));
+	} else {
+		set_label(create_checkbox_widget(label_, checked_, button_resolution()));
+	}
+	set_dim(w, h);
+}
+
 variant checkbox::get_value(const std::string& key) const
 {
 	if(key == "checked") {

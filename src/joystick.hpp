@@ -111,6 +111,22 @@ namespace joystick {
     void change_device(int device_position);
     const static int no_device = -2;         // -2 to avoid conflating with no_id
    
+    // Whether the current joystick was setup using default values (true) or
+    // values supplied by the user or the preferences file (false).
+    bool using_default_config();
+
+    // Returns true iff the current joystick can use the configuration saved in
+    // preferences::.
+    bool can_use_preferences_config();
+
+    // Causes the current joystick, if any, to use the configuration stored in
+    // preferences::, if possible according to can_use_preferences_config().
+    void use_preferences_config();
+
+    // Causes the current joystick, if any, to use the default configuration.  The
+    // default will depend on the particular device.
+    void use_default_config();
+
 
     //
     // For creating joystick configure screens

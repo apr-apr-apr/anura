@@ -30,6 +30,7 @@ public:
 	checkbox(widget_ptr label, bool checked, boost::function<void(bool)> onclick, BUTTON_RESOLUTION button_resolution=BUTTON_SIZE_NORMAL_RESOLUTION);
 	checkbox(const variant& v, game_logic::formula_callable* e);
 	bool checked() const { return checked_; }
+    void set_checked(bool new_val);
 protected:
 	virtual variant get_value(const std::string& key) const;
 private:
