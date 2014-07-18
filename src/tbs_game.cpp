@@ -171,7 +171,7 @@ boost::intrusive_ptr<game> game::create(const variant& v)
 
 game::game(const game_type& type)
   : type_(type), game_id_(generate_game_id()),
-    started_(false), state_(STATE_SETUP), state_id_(0), rng_seed_(rng::get_seed()),
+    started_(false), state_(STATE_SETUP), state_id_(0), rng_seed_(rng::get_seed()), cycle_(0), tick_rate_(50),
 	backup_callable_(NULL)
 {
 }
@@ -182,6 +182,8 @@ game::game(const variant& value)
     started_(value["started"].as_bool(false)),
 	state_(STATE_SETUP),
 	state_id_(0), rng_seed_(rng::get_seed()),
+	cycle_(value["cycle"].as_int(0)),
+	tick_rate_(value["tick_rate"].as_int(50)),
 	backup_callable_(NULL)
 {
 }
@@ -193,6 +195,8 @@ game::game(const std::string& game_type, const variant& doc)
 	state_(started_ ? STATE_PLAYING : STATE_SETUP),
 	state_id_(doc["state_id"].as_int()),
 	rng_seed_(doc["rng_seed"].as_int()),
+	cycle_(doc["cycle"].as_int(0)),
+	tick_rate_(doc["tick_rate"].as_int(50)),
 	backup_callable_(NULL),
 	doc_(doc["state"])
 {
@@ -209,7 +213,7 @@ game::~game()
 	std::cerr << "DESTROY GAME\n";
 }
 
-variant game::write(int nplayer) const
+variant game::write(int nplayer, int processing_ms) const
 {
 	game_logic::wml_formula_callable_serialization_scope serialization_scope;
 
@@ -220,6 +224,11 @@ variant game::write(int nplayer) const
 	result.add("started", started_);
 	result.add("state_id", state_id_);
 	result.add("rng_seed", rng_seed_);
+
+	if(processing_ms != -1) {
+		fprintf(stderr, "ZZZ: server_time: %d\n", processing_ms);
+		result.add("server_time", processing_ms);
+	}
 
 	//observers see the perspective of the first player for now
 	result.add("nplayer", variant(nplayer < 0 ? 0 : nplayer));
@@ -322,7 +331,7 @@ void game::send_notify(const std::string& msg, int nplayer)
 	queue_message(result.build(), nplayer);
 }
 
-game::player::player()
+game::player::player() : confirmed_state_id(-1)
 {
 }
 
@@ -394,11 +403,11 @@ int game::get_player_index(const std::string& nick) const
 	return -1;
 }
 
-void game::send_game_state(int nplayer)
+void game::send_game_state(int nplayer, int processing_ms)
 {
 	if(nplayer == -1) {
 		for(int n = 0; n != players().size(); ++n) {
-			send_game_state(n);
+			send_game_state(n, processing_ms);
 		}
 
 		//Send to observers.
@@ -407,7 +416,7 @@ void game::send_game_state(int nplayer)
 
 		current_message_ = "";
 	} else if(nplayer >= 0 && nplayer < players().size()) {
-		queue_message(write(nplayer), nplayer);
+		queue_message(write(nplayer, processing_ms), nplayer);
 	}
 }
 
@@ -437,8 +446,14 @@ void game::process()
 	}
 
 	if(started_) {
+		const int starting_state_id = state_id_;
 		static const std::string ProcessStr = "process";
 		handle_event(ProcessStr);
+		++cycle_;
+
+		if(state_id_ != starting_state_id) {
+			send_game_state();
+		}
 	}
 }
 
@@ -450,6 +465,8 @@ variant game::get_value(const std::string& key) const
 		return doc_;
 	} else if(key == "state_id") {
 		return variant(state_id_);
+	} else if(key == "cycle") {
+		return variant(cycle_);
 	} else if(key == "bots") {
 		std::vector<variant> v;
 		for(int n = 0; n != bots_.size(); ++n) {
@@ -528,8 +545,19 @@ void game::handle_message(int nplayer, const variant& msg)
 	} else if(type == "request_updates") {
 		if(msg.has_key("state_id") && !doc_.is_null()) {
 			const variant state_id = msg["state_id"];
-			if(state_id.as_int() != state_id_) {
+			if(state_id.as_int() != state_id_ && nplayer >= 0) {
 				send_game_state(nplayer);
+			} else if(state_id.as_int() == state_id_ && nplayer >= 0 && nplayer < players_.size() && players_[nplayer].confirmed_state_id != state_id_) {
+				players_[nplayer].confirmed_state_id = state_id_;
+
+				std::ostringstream s;
+				s << "{ type: \"confirm_sync\", player: " << nplayer << ", state_id: " << state_id_ << " }";
+				std::string msg = s.str();
+				for(int n = 0; n != players_.size(); ++n) {
+					if(n != nplayer && players_[n].is_human) {
+						queue_message(msg, nplayer);
+					}
+				}
 			}
 		}
 		return;
@@ -550,13 +578,18 @@ void game::handle_message(int nplayer, const variant& msg)
 		return;
 	}
 
+	int start_time = SDL_GetTicks();
+
 	game_logic::map_formula_callable_ptr vars(new game_logic::map_formula_callable);
 	vars->add("message", msg);
 	vars->add("player", variant(nplayer));
 	rng::set_seed(rng_seed_);
 	handle_event("message", vars.get());
 	rng_seed_ = rng::get_seed();
-	send_game_state();
+
+	const int time_taken = SDL_GetTicks() - start_time;
+
+	send_game_state(-1, time_taken);
 }
 
 void game::setup_game()
