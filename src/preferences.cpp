@@ -501,6 +501,7 @@ namespace preferences {
 		bool screen_rotated_ = false;
 		
 		bool use_joystick_ = true;
+        bool suppress_haptic_ = false;
 		
 #if defined(TARGET_TEGRA)
 		int virtual_screen_width_ = 1024;
@@ -1062,6 +1063,15 @@ namespace preferences {
         use_joystick_ = new_val;
     }
 
+    bool suppress_haptic()
+	{
+		return suppress_haptic_;
+	}
+
+    void set_suppress_haptic(bool new_val)
+    {
+        suppress_haptic_ = new_val;
+    }
 	
 	game_logic::formula_callable* registry()
 	{
@@ -1117,6 +1127,7 @@ namespace preferences {
 		if(show_control_rects.is_null() == false) {
 			show_iphone_controls_ = show_control_rects.as_bool(show_iphone_controls_);
 		}
+        suppress_haptic_ = node["suppress_haptic"].as_bool(suppress_haptic_);
 		
 		no_sound_ = node["no_sound"].as_bool(no_sound_);
 		no_music_ = node["no_music"].as_bool(no_music_);
@@ -1226,6 +1237,7 @@ namespace preferences {
 		node.add("allow_autopause", variant::from_bool(allow_autopause_));
 		node.add("reverse_ab", variant::from_bool(reverse_ab_));
 		node.add("joystick", variant::from_bool(use_joystick_));
+		node.add("suppress_haptic", variant::from_bool(suppress_haptic_));
 		node.add("sound_volume", static_cast<int>(sound::get_sound_volume()*1000));
 		node.add("music_volume", static_cast<int>(sound::get_music_volume()*1000));
 		node.add("key_up", controls::get_keycode(controls::CONTROL_UP));
@@ -1428,6 +1440,10 @@ namespace preferences {
 			use_joystick_ = true;
 		} else if(s == "--no-joystick") {
 			use_joystick_ = false;
+		} else if(s == "--suppress-haptic") {
+			suppress_haptic_ = true;
+		} else if(s == "--no-suppress-haptic") {
+			suppress_haptic_ = false;
 		} else if(arg_name == "--server") {
 			tbs_uri_ = uri::uri::parse(arg_value);
 		} else if(arg_name == "--user") {

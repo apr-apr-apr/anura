@@ -169,6 +169,9 @@ namespace preferences {
 
 	bool use_joystick();
     void set_use_joystick(bool new_val);
+
+    bool suppress_haptic();
+    void set_suppress_haptic(bool new_val);
    
     // SDL Name and GUID of joystick last selected by the user. 
     // An empty ("") GUID string means no joystick has been chosen.

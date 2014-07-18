@@ -152,7 +152,7 @@ void print_help(const std::string& argv0)
 "      --height[=]NUM           sets the game window height to which contents\n" <<
 "                                 are scaled\n" <<
 "      --host                   set the game server host address\n" <<
-"      --[no-]joystick          enables/disables joystick support\n" <<
+"      --[no-]joystick          use joystick (or not) at start up\n" <<
 "      --level[=]LEVEL_FILE     starts the game using the specified level file,\n" <<
 "                                 relative to the level path\n" <<
 "      --level-path=PATH        sets the path to the game level files\n" <<
@@ -174,6 +174,7 @@ void print_help(const std::string& argv0)
 "      --pass=PASSWORD          sets the password to use as part of the TBS\n"
 "                                 server and module system\n" <<
 "      --[no-]sound             enables/disables sound and music support\n" <<
+"      --[no-]suppress-haptic   disables (or allows) force feedback support\n" <<
 "      --widescreen             sets widescreen mode, increasing the game view\n" <<
 "                                 area for wide screen displays\n" <<
 "      --width[=]NUM            sets the game window width to which contents are\n" <<

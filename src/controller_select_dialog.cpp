@@ -65,8 +65,9 @@ namespace {
     // Shows the joystick configure dialog if we are using a joystick,
     // otherwise goes straight to the keyboard configure dialog.
     void show_configure_dialog() {
-        // XXX #if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR then what do we do? Does the iPhone version use funny virtual keyboard?
-        if(joystick::current_device_id() == joystick::no_id) { // XXX !preferences::use_joystick()) {
+        // XXX System specific code is probably required here
+        // #if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR 
+        if(joystick::current_device_id() == joystick::no_id) {
             show_controls_dialog();
         } else {
             show_joystick_configure_dialog();

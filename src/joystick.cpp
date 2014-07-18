@@ -37,17 +37,6 @@
 
 #include "asserts.hpp"
 
-namespace haptic {
-namespace {
-std::map<int,std::shared_ptr<SDL_Haptic>> haptic_devices;
-typedef std::map<SDL_Haptic*,std::map<std::string,int>> haptic_effect_table;
-haptic_effect_table& get_effects() {
-	static haptic_effect_table res;
-	return res;
-}
-}
-}
-
 namespace joystick {
 
     // Useful values for defining axis ranges, neutral points and dead zones.
@@ -98,7 +87,9 @@ namespace joystick {
             // Start using the device at position 'device_position' in SDL's
             // list of currently connected joysticks.  Returns NULL if the
             // opening fails.
-            static sdl_controller* open(int device_position);
+            // Will try to open the corresponding haptic device (haptist) only
+            // if try_haptic is true.
+            static sdl_controller* open(int device_position, bool try_haptic);
             
             // The read_ functions return values in the same ranges as their
             // SDL equivalents.
@@ -121,6 +112,10 @@ namespace joystick {
             virtual std::string get_name() = 0;
             virtual bool is_open_and_attached() = 0;
 
+            // Get associated SDL_Haptic device.  Pointer will be NULL if no
+            // haptic device is available.
+            virtual SDL_Haptic* get_haptist() = 0;
+
             // These functions are our subjective hints about the best default
             // way to set the controller up.
             virtual bool prefer_axial_setup() = 0;
@@ -133,6 +128,9 @@ namespace joystick {
             virtual ~sdl_controller() {
             }
 
+        private:
+            static SDL_Haptic* open_haptist(SDL_Joystick* joy);
+
     };
 
 
@@ -140,8 +138,9 @@ namespace joystick {
         // sdl_joy_controller is the SDL_Joystick version of sdl_controller.
         
         public:
-            sdl_joy_controller(SDL_Joystick* joystickIN) {
+            sdl_joy_controller(SDL_Joystick* joystickIN, SDL_Haptic* haptistIn) {
                 joystick = joystickIN;
+                haptist = haptistIn;
             }
 
             Sint16 read_axis(int axis_id) override {
@@ -186,6 +185,10 @@ namespace joystick {
             bool is_open_and_attached() override {
                 return SDL_JoystickGetAttached(joystick);
             }
+
+            SDL_Haptic* get_haptist() {
+                return haptist;
+            }
            
             // These are subjective hints about default setups.  Remember that SDL can call a d-pad anything from 4 buttons to a
             // 9-way hat to two axes.  We just check what SDL thinks it has so later we can guess a vaguely sensible default
@@ -210,11 +213,15 @@ namespace joystick {
             }
             
             ~sdl_joy_controller() {
+                if(haptist) {
+                    SDL_HapticClose(haptist);
+                }
                 SDL_JoystickClose(joystick);
             }
         
         private:
             SDL_Joystick* joystick;
+            SDL_Haptic* haptist;
 
     };
 
@@ -225,9 +232,10 @@ namespace joystick {
         // functions here are still SDL_Joystick calls.
 
         public:
-            sdl_game_controller(SDL_GameController* game_controllerIN, SDL_Joystick* joystickIN) {
+            sdl_game_controller(SDL_GameController* game_controllerIN, SDL_Joystick* joystickIN, SDL_Haptic* haptistIN) {
                 game_controller = game_controllerIN;
                 joystick = joystickIN;
+                haptist = haptistIN;
             }
 
             Sint16 read_axis(int axis_id) override {
@@ -275,6 +283,10 @@ namespace joystick {
                 return SDL_GameControllerGetAttached(game_controller);
             }
 
+            SDL_Haptic* get_haptist() {
+                return haptist;
+            }
+
             // SDL_GameController models our device as a virtual XBox360 pad.
             // Flagging that with prefer_sdl_gc_setup means the default config
             // function can assign controls to buttons very sensibly.
@@ -297,42 +309,90 @@ namespace joystick {
             }
 
             ~sdl_game_controller() {
+                if(haptist) {
+                    SDL_HapticClose(haptist);
+                }
                 SDL_GameControllerClose(game_controller);
             }
 
         private:
             SDL_GameController* game_controller;
             SDL_Joystick* joystick;
+            SDL_Haptic* haptist;
     };
     
+
+    // opens and returns any haptic device contained in the joystick device
+    // jc, or returns NULL if no such device could be opened.
+    SDL_Haptic* sdl_controller::open_haptist(SDL_Joystick* jc) {
+        SDL_Haptic* hc = SDL_HapticOpenFromJoystick(jc);
+        if(hc == NULL) {
+            std::cerr   << "Warning: No haptic device in this joystick." << std::endl
+                        << "SDL: " << SDL_GetError() << std::endl;
+        } else {
+            std::cerr   << "INFO: Found viable haptic device." << std::endl;
+            // Try to buzz the device when we start it.
+            if(SDL_HapticRumbleInit(hc) != 0) {
+                std::cerr   << "Warning: Failed to initialise a simple rumble effect." << std::endl
+                            << "SDL: " << SDL_GetError() << std::endl;
+            }
+            if(SDL_HapticRumblePlay(hc, 0.5, 1000) != 0) {
+                std::cerr   << "Warning: Failed to play a simple rumble effect." << std::endl
+                            << "SDL: " << SDL_GetError() << std::endl;
+            }
+
+            std::cerr << "Now to rumba!" << std::endl;
+            SDL_Delay(1200);
+            std::cerr << "First test hit." << std::endl;
+            SDL_HapticRumblePlay(hc, 1.0, 300);
+            SDL_Delay(1200);
+            std::cerr << "Second test hit." << std::endl;
+            SDL_HapticRumblePlay(hc, 1.0, 300);
+            SDL_Delay(1200);
+            std::cerr << "Third test hit." << std::endl;
+            SDL_HapticRumblePlay(hc, 1.0, 300);
+
+        }
+        return hc;
+    }
+
+
     // open(device_position) opens the device at position 'device_position' in
     // the SDL joystick device list.  If that device can function as an
     // SDL_GameController that version is used, otherwise the SDL_Joystick
     // version is used.  Will return NULL if the open()ing fails. 
-    sdl_controller* sdl_controller::open(int device_position) {
+    sdl_controller* sdl_controller::open(int device_position, bool try_haptics) {
         if(SDL_IsGameController(device_position)) {
             SDL_GameController* gc = SDL_GameControllerOpen(device_position);
             if(gc == NULL) {
-                std::cerr << "Warning: Failed to open SDL_GameController at device position " << device_position << "." << std::endl;
+                std::cerr   << "Warning: Failed to open SDL_GameController at device position " 
+                            << device_position << "." << std::endl
+                            << "SDL: " << SDL_GetError() << std::endl;
                 return NULL;
             } else {
                 SDL_Joystick* jc = SDL_GameControllerGetJoystick(gc);
                 if(jc == NULL) {
-                    std::cerr << "Warning: Failed to open SDL_GameController underlying joystick at device at position " << device_position << "." << std::endl;
+                    std::cerr   << "Warning: Failed to open SDL_GameController underlying joystick at device at position " 
+                                << device_position << "." << std::endl
+                                << "SDL: " << SDL_GetError() << std::endl;
                     return NULL;
                 } else {
-                    std::cerr << "INFO: Opened device at position " << device_position << " as sdl_game_controller." << std::endl;
-                    return new sdl_game_controller(gc, jc);
+                    std::cerr   << "INFO: Opened device at position " << device_position << " as sdl_gc_controller." 
+                                << std::endl;
+                    return new sdl_game_controller(gc, jc, (try_haptics ? open_haptist(jc) : NULL));
                 }
             }
         } else {
             SDL_Joystick* jc = SDL_JoystickOpen(device_position);
             if(jc == NULL) {
-                std::cerr << "Warning: Failed to open SDL_Joystick device at position " << device_position << "." << std::endl;
+                std::cerr   << "Warning: Failed to open SDL_Joystick device at position " 
+                            << device_position << "." << std::endl
+                            << "SDL: " << SDL_GetError() << std::endl;
                 return NULL;
             } else {
-                std::cerr << "INFO: Opened device at position " << device_position << " as sdl_joy_controller." << std::endl;
-                return new sdl_joy_controller(jc);
+                std::cerr   << "INFO: Opened device at position " << device_position << " as sdl_joy_controller." 
+                            << std::endl;
+                return new sdl_joy_controller(jc, (try_haptics ? open_haptist(jc) : NULL));
             }
         }
     }
@@ -773,11 +833,21 @@ namespace joystick {
             // or created externally (ie from preferences or a config screen) (false).
             bool default_config;
 
+            // Map from our English names for haptic effects to SDL haptic effect ID numbers.
+            std::map<std::string, int> haptic_palette;
+
         public:
             player_controller() {
                 device = NULL;
                 signal_map.clear();
                 default_config = true;
+                haptic_palette.clear();
+            }
+
+            ~player_controller() {
+                device = NULL;
+                signal_map.clear();
+                haptic_palette.clear();
             }
 
             // get_device() shares ownership of the returned device.
@@ -838,26 +908,40 @@ namespace joystick {
                 }
             }
 
-            // change_device(new_device) resets this player_controller to start
-            // using the new_device.  It removes any references to the old
-            // controller device we were using, including clearing out the
-            // controller_signals map.  A new map is created: if the new device
-            // matches the joystick settings in preferences::, then those
-            // settings will be used.  Otherwise a default configure_blind()
-            // mapping is used.
-            void change_device(std::shared_ptr<sdl_controller> new_device) {
+            // change_device(new_device, haptic_album) resets this
+            // player_controller to start using the new_device, creating a new
+            // signal map and uploading the supplied haptic_album to the
+            // controller.
+            // 
+            // Any references to the old controller device we were using are
+            // removed, including clearing out the controller_signals map.  A
+            // new map is created: if the new device matches the joystick
+            // settings in preferences::, then those settings will be used.
+            // Otherwise a default configure_blind() mapping is used.
+            void change_device(std::shared_ptr<sdl_controller> new_device, const std::map<std::string, SDL_HapticEffect>& haptic_album) {
+                
+                signal_map.clear();
+                haptic_palette.clear();
+                
                 device = new_device;
                 if(device != NULL) {
                     std::cerr << "INFO: Now using controller " << device->get_name() << " [" << device->get_guid() << "]." << std::endl;
-                    ///RRR preferences::set_use_joystick(true);
+                    
+                    // Create a map from controller action signals to in game actions
                     if(device->get_guid() == preferences::configured_joystick_guid()) {
                         configure_from_preferences();
                     } else {
                         configure_blind();
                     }
+
+                    // Upload haptic effects if possible
+                    std::cerr << "INFO: Uploading haptic album with " << haptic_album.size() << "entries." << std::endl;
+                    for(auto effect_pair : haptic_album) {
+                        add_haptic_effect(effect_pair.first, &(effect_pair.second));
+                    }
+
                 } else {
                     std::cerr << "INFO: Now using NO controller." << std::endl;
-                    ///RRR preferences::set_use_joystick(false);
                 }
             }
 
@@ -1014,6 +1098,73 @@ namespace joystick {
                 }
 
                 return false;
+            }
+
+
+            // Haptic feedback functionsss
+            
+            // Play the effect 'name' in the current device 'iters' times, or,
+            // if there is no such effect available, rumble, or, if the device
+            // is not haptic, do nothing.
+            // 
+            void play_haptic_effect(const std::string& name, int iters) {
+                if(!device) {
+                    return;
+                }
+                SDL_Haptic* haptist = device->get_haptist();
+                if(haptist) {
+                    auto name_iter = haptic_palette.find(name);
+                    if(name_iter == haptic_palette.end()) {
+                        std::cerr << "--that's a generic rumble because I couldn't find any uploaded effect for " << name << "." << std::endl;
+                        SDL_HapticRumblePlay(haptist, 1.0, 750);
+                    } else {
+                        std::cerr << "--<<big effect>>! Rock on!" << std::endl;
+                        SDL_HapticRunEffect(haptist, name_iter->second, iters);
+                    }
+                }
+            }
+
+            // Stops the haptic effect identified by 'name', if any, on the current device.
+            void stop_haptic_effect(const std::string& name) {
+                if(!device) {
+                    return;
+                }
+                SDL_Haptic* haptist = device->get_haptist();
+                if(haptist) {
+                    auto effect_name_iter = haptic_palette.find(name);
+                    if(effect_name_iter != haptic_palette.end()) {
+                        SDL_HapticStopEffect(haptist, effect_name_iter->second);
+                    }
+                }
+            }
+
+            // Stops all haptic effects, if any, on the current device.
+            void stop_all_haptic_effects() {
+                if(!device) {
+                    return;
+                }
+                SDL_Haptic* haptist = device->get_haptist();
+                if(haptist) {
+                    SDL_HapticStopAll(haptist);
+                }
+            }
+
+            // Uploads the given SDL_HapticEffect onto this device if possible, and associates it with 'name', does nothing otherwise.
+            // Each uploaded effect should have a unique name.
+            void add_haptic_effect(const std::string& name, SDL_HapticEffect* effect) {
+                if(!device) {
+                    return;
+                }
+                SDL_Haptic* haptist = device->get_haptist();
+                if(haptist) {
+                    int id = SDL_HapticNewEffect(haptist, effect);
+                    if(id >= 0) {
+                        std::cerr << "INFO: succeeded in uploading haptic effect " << name << " to slot " << id << " of current device." << std::endl;
+                        haptic_palette[name] = id;
+                    } else {
+                        std::cerr << "WARNING: error creating haptic effect(" << name << "): " << SDL_GetError() << std::endl;
+                    }
+                }
             }
 
     };
@@ -1240,6 +1391,12 @@ namespace joystick {
 
     class joystick_manager {
 
+        private:
+            std::vector<std::shared_ptr<sdl_controller>> joysticks;
+            std::shared_ptr<player_controller> local_player_controller;
+            std::map<std::string, SDL_HapticEffect> haptic_effect_album;
+            bool haptics_allowed;
+
         public:
             // joystick_names() returns a human-readable list of names for the joysticks currently connected through SDL.  
             //
@@ -1279,10 +1436,10 @@ namespace joystick {
             // joystick_names().  
             void change_device(int device_position) {
                 if(device_position == no_device) {
-                    local_player_controller->change_device(NULL);
+                    local_player_controller->change_device(NULL, haptic_effect_album);
                 } else {
                     ASSERT_INDEX_INTO_VECTOR(device_position, joysticks);
-                    local_player_controller->change_device(joysticks[device_position]);
+                    local_player_controller->change_device(joysticks[device_position], haptic_effect_album);
                 }
             }
 
@@ -1328,7 +1485,7 @@ namespace joystick {
                 while(iter != joysticks.end()) {
                     if(!(*iter)->is_open_and_attached()) {
                         if(local_player_controller->get_device() == (*iter)) {
-                            local_player_controller->change_device(NULL);
+                            local_player_controller->change_device(NULL, haptic_effect_album);
                         }
                         iter = joysticks.erase(iter);
                         ret = true;
@@ -1337,31 +1494,48 @@ namespace joystick {
                     }
                 }
 
-                // All right.  This is a bit embarrassing.  SDL really wants us to
-                // track every joystick and attach and remove event, but that
-                // doesn't gel nicely with Anura at the moment.  We can potentially
-                // lose those events, so we need to have a synchronisation check
-                // before we tell the user which joysticks are available etc.  
+                // Check if there are any new joysticks we haven't opened yet.
+
+                // This is a bit embarrassing.  SDL really wants us to track
+                // every joystick and attach and remove event, but that doesn't
+                // gel nicely with Anura at the moment.  We can potentially
+                // lose those events - and subtle SDL bugs might lose them for
+                // us - so we need to have a synchronisation check before we
+                // tell the user which joysticks are available
+                // etc.  
                 //
                 // To complicate matters, the SDL2 api is still evolving and is
                 // not very well documented.  There doesn't appear to be any
-                // way you can directly ask SDL "is device 14 open".  
+                // way you can directly ask SDL "is device 14 open?".  
                 //
                 // We can work around this in an ungainly manner by opening
                 // device 14 (again), getting its instance id and then checking
-                // if that instance id is used by any other stick we've got
-                // open.  SDL does support multiple open()s and close()s of the
-                // same device, so it appears to work, but oh for an
-                // SDL_JoystickIsOpen(int device_id) function.
+                // if that instance id is used by any stick we know about.
+                // If it is, then we have already opened device 14 and we can
+                // leave it alone, otherwise device 14 is new and we need to
+                // open it and add it to our list.  SDL does support multiple
+                // open()s and close()s of the same device, so this method does
+                // appear to work.
+                //
+                // Further complicating matters is SDL's haptic subsystem.  
+                // Apparently early versions of SDL2 (still in use at the time
+                // of writing) do not coordinate the haptic device list with
+                // hotplugging changes to the joystick device list.  That means
+                // when we synchronise() here, we want to avoid opening and
+                // closing haptic devices when we are just trying to work out
+                // if a joystick is new.  However, when we finally decide to
+                // open a new joystick we *do* need to open it with haptics on,
+                // (if allowed).
+                //
                 
                 // We go through each device in SDL's physical device list, see
                 // if it's open, and if not open it and add it to our list of
                 // open controllers.
                 int num_sticks = SDL_NumJoysticks();
                 for(int j = 0; j < num_sticks; j++) {
-                    std::shared_ptr<sdl_controller> candidate(sdl_controller::open(j));
+                    std::shared_ptr<sdl_controller> candidate(sdl_controller::open(j, false)); // See note above on haptics
                     if(!candidate) {
-                        ASSERT_FATAL("SDL Joystick refuses to open detected stick.");
+                        continue;
                     }
                     SDL_JoystickID candidate_id = candidate->get_id();
                     bool found = false;
@@ -1372,6 +1546,11 @@ namespace joystick {
                         }
                     }
                     if(!found) {
+                        candidate = NULL; // Will invoke close().  See note above on haptics
+                        std::shared_ptr<sdl_controller> candidate(sdl_controller::open(j, haptics_allowed));
+                        if(!candidate) {
+                            continue;
+                        }
                         joysticks.push_back(std::shared_ptr<sdl_controller>(candidate));
                         ret = true;
                     }
@@ -1380,14 +1559,19 @@ namespace joystick {
                 return ret;
             }
 
+            // Sets the haptic effect album entry for 'name' to 'effect' and
+            // uploads it the controller currently in use, if any.
+            void add_haptic_effect(std::string name, SDL_HapticEffect effect) {
+                haptic_effect_album[name] = effect;
+                local_player_controller->add_haptic_effect(name, &(haptic_effect_album[name]));
+            } 
+
             ~joystick_manager() {
                 local_player_controller = NULL; // Should delete underlying player_controller
                 joysticks.clear(); // Should SDL_ThingyClose() underlying joysticks
+                haptic_effect_album.clear();
             }
 
-        private:
-            std::vector<std::shared_ptr<sdl_controller>> joysticks;
-            std::shared_ptr<player_controller> local_player_controller;
     };
 
     // pump_events(event, already_claimed) checks the given SDL event to see if it
@@ -1418,10 +1602,8 @@ namespace joystick {
         switch(ev.type) {
             case SDL_JOYDEVICEADDED: {
                 int joy_index = ev.jdevice.which;
-                sdl_controller* new_controller = sdl_controller::open(joy_index);
-                if(!new_controller) {
-                    std::cerr << "Warning: Tried to open new joy/game controller at device INDEX " << joy_index << " ... but SDL wouldn't!" << std::endl;
-                } else {
+                sdl_controller* new_controller = sdl_controller::open(joy_index, haptics_allowed);
+                if(new_controller) {
                     std::cerr << "INFO: Added new controller from SDL device INDEX " << joy_index << "." << std::endl;
                     joysticks.push_back(std::shared_ptr<sdl_controller>(new_controller));
                 }
@@ -1441,7 +1623,7 @@ namespace joystick {
                     if((*iter)->get_id() == joy_id) {
                         std::shared_ptr<sdl_controller> device_in_use_now = local_player_controller->get_device();
                         if(device_in_use_now != NULL && device_in_use_now->get_id() == joy_id) {
-                            local_player_controller->change_device(NULL);
+                            local_player_controller->change_device(NULL, haptic_effect_album);
                             was_in_use = true;
                         }
                         iter = joysticks.erase(iter);
@@ -1462,21 +1644,26 @@ namespace joystick {
         return false;
     }
 
+}
 
-    namespace {
-        // Note: These shared pointers will control objects that have custom
-        // destructors containingSDL_ThingyClose() calls.  Being in file/namespace
-        // scope, they will also live till the end of the program.  So we need to
-        // be sure to clear() these collections in order to invoke the underlying
-        // destructors before we try calling SDL_Quit or anything else that will
-        // invalidate calls to SDL_ThingyClose().
+namespace {
+    // Note: These shared pointers will control objects that have custom
+    // destructors containingSDL_ThingyClose() calls.  Being in file/namespace
+    // scope, they will also live till the end of the program.  So we need to
+    // be sure to clear() these collections in order to invoke the underlying
+    // destructors before we try calling SDL_Quit or anything else that will
+    // invalidate calls to SDL_ThingyClose().
 
-        joystick_manager* local_manager = NULL;
-        player_controller* local_joystick = NULL;
-        interactive_controller_configurer* local_configurer = NULL;
-        bool silent = false;
-    }
+    using namespace joystick;
 
+    joystick_manager* local_manager = NULL;
+    player_controller* local_joystick = NULL;
+    interactive_controller_configurer* local_configurer = NULL;
+    bool silent = false;
+}
+
+
+namespace joystick {
 
     // Sets up signal_map from the user preferences that have been read
     // in from the user configuration file. We rely on the preferences reading
@@ -1484,81 +1671,86 @@ namespace joystick {
     // that were missing in the file.
     void joystick_manager::initial_setup() {
 
+        // Start up joystick module, flee if it doesn't work.
         if(SDL_InitSubSystem(SDL_INIT_JOYSTICK) != 0) {
-            std::cerr << "ERROR: Unable to initialise joystick subsystem" << std::endl;
+            std::cerr   << "ERROR: Unable to initialise joystick subsystem." << std::endl
+                        << "SDL: " << SDL_GetError() << std::endl;
             // We can pretty much abandon hope of using a joystick now.  Just
             // create a non-functional player_controller and leave.
             local_player_controller = std::make_shared<player_controller>();
             local_joystick = local_player_controller.get();
             local_configurer = NULL;
+            haptics_allowed = false;
             return;
         }
+        std::cerr   << "INFO: Initialised SDL joystick subsystem." << std::endl;
 
+
+        // Start the game controller module.
         if(SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) != 0) {
-            std::cerr << "ERROR: Unable to initialise game controller subsystem" << std::endl;
+            std::cerr   << "WARNING: Unable to initialise game controller subsystem." << std::endl
+                        << "SDL: " << SDL_GetError() << std::endl;
         } else {
-
+            
+            std::cerr   << "INFO: Initialised SDL game controller subsystem." << std::endl;
+            
             // In the future Anura should probably load a central
             // SDL_GameController database, but for now we just rely on SDL's
             // inbuilt db (from whenever SDL was compiled, maybe ages ago) and load
             // the user's own SDL_GameController configuration database, if it
-            // exists
+            // exists.
             // XXX temporary code so we can use older SDL with Mac OS
 #if !TARGET_OS_MAC
             std::string user_sdl_gamecontroller_db = std::string(preferences::user_data_path()) + "/sdl_gamecontrollerdb.txt";
             if(sys::file_exists(user_sdl_gamecontroller_db)) {
                 int db_result = SDL_GameControllerAddMappingsFromFile(user_sdl_gamecontroller_db.c_str());
                 if(db_result == -1) {
-                    std::cerr << "Warning: SDL not happy with " << user_sdl_gamecontroller_db << ".  Persisting." << std::endl;
+                    std::cerr << "Warning: SDL not happy with " << user_sdl_gamecontroller_db << std::endl
+                              << "SDL: " << SDL_GetError() << std::endl
+                              << "Warning: Anura will still use SDL's built in GameController definitions anyway." << std::endl;
                 } else {
-                    std::cerr << "SDL found " << db_result << " interesting game controller descriptions in [" << user_sdl_gamecontroller_db << "]." << std::endl;
+                    std::cerr   << "INFO: SDL found " << db_result << " interesting game controller descriptions in [" 
+                                << user_sdl_gamecontroller_db << "]." << std::endl;
                 }
             } else {
-                std::cerr << "There is no user game controller database called [" << user_sdl_gamecontroller_db << "]." << std::endl;
+                std::cerr   << "INFO: There is no user-supplied game controller database [" 
+                            << user_sdl_gamecontroller_db << "].  Relying on SDL inbuilt definitions." << std::endl;
             }
 #endif
         }
 
-        if(SDL_InitSubSystem(SDL_INIT_HAPTIC) != 0) {
-            std::cerr << "ERROR: Unable to initialise haptic subsystem" << std::endl;
+        // Start the haptics module, perhaps.
+        if(!preferences::suppress_haptic()) {
+            if(SDL_InitSubSystem(SDL_INIT_HAPTIC) != 0) {
+                std::cerr << "Warning: Unable to initialise haptic subsystem." << std::endl
+                          << "SDL: " << SDL_GetError() << std::endl;
+                haptics_allowed = false;
+            } else {
+                std::cerr << "INFO: Initialised haptic subsystem - beware known SDL limitations." << std::endl;
+                haptics_allowed = true;
+            }
+        } else {
+            haptics_allowed = false;
         }
-        
-        // Now we're going to open every joystick we can grab (except on Android
-        // where we stick to just the first - is that the system stick?)
+
+       
+        // Open every available joystick / game controller. 
 #if defined(__ANDROID__)
+        std::cerr   << "Warning: Anura currently assumes Android SDL can only effectively operate one joystick. "
+                    << std::endl;
         int n = 0; {
 #else
         for(int n = 0; n != SDL_NumJoysticks(); ++n) {
 #endif
-            std::shared_ptr<sdl_controller> j = std::shared_ptr<sdl_controller>(sdl_controller::open(n));
+            std::shared_ptr<sdl_controller> j = std::shared_ptr<sdl_controller>(sdl_controller::open(n, haptics_allowed));
             if(j) {
                 joysticks.push_back(j);
-            } else {
-                std::cerr << "Warning: could not open SDL_Joystick at position " << n << " in device list." << std::endl;
-            }
-
-            SDL_Haptic *haptic = SDL_HapticOpen(n);
-            if(haptic) {
-                // Note: The SDL_HapticClose() in our custom destructor must be called before we shut SDL down.
-                // haptic::haptic_devices may survive until the end of the program, though, so we need to explicitly
-                // clear it out before shutting SDL down.
-                haptic::haptic_devices[n] = std::shared_ptr<SDL_Haptic>(haptic, [](SDL_Haptic* h){SDL_HapticClose(h);});
-                if(SDL_HapticRumbleInit(haptic) != 0) {
-                    std::cerr << "Failed to initialise a simple rumble effect" << std::endl;
-                    haptic::haptic_devices.erase(n);
-                }
-                // buzz the device when we start.
-                if(SDL_HapticRumblePlay(haptic, 0.5, 1000) != 0) {
-                    std::cerr << "Failed to play a simple rumble effect" << std::endl;
-                    haptic::haptic_devices.erase(n);
-                }
             }
         }
 
-        std::cerr << "INFO: Initialized " << joysticks.size() << " joysticks" << std::endl;
-        std::cerr << "INFO: Initialized " << haptic::haptic_devices.size() << " haptic devices" << std::endl;
+        std::cerr << "INFO: Initialized " << joysticks.size() << " joysticks." << std::endl;
 
-        // Make the player_controller that links our hardware controls to in-game controls 
+        // Make the player_controller that links our hardware controls to in-game controls. 
         local_player_controller = std::make_shared<player_controller>();
 
         // If joysticks are on in preferences::, then choose one to use.
@@ -1578,11 +1770,11 @@ namespace joystick {
             }
 
             if(chosen_stick != NULL) {
-                local_player_controller->change_device(chosen_stick);
+                local_player_controller->change_device(chosen_stick, haptic_effect_album);
             } else if(joysticks.size() > 0) {
-                local_player_controller->change_device(joysticks[0]);
+                local_player_controller->change_device(joysticks[0], haptic_effect_album);
             } else {
-                //preferences::set_use_joystick(false); // XXX just do nothing here
+                // do nothing and keep NULL device
             }
         }
 
@@ -1953,61 +2145,63 @@ namespace joystick {
     //
     // Singular interface wrappers for interactive configurer.  See header file.
     //
+    
+    // XXX suspect testing local_joystick is non-null is neither necessary nor sufficient to ensure safety in the following calls; we always have a player controller, even if it contains an empty device, and we cannot assume get-device() will not return NULL.
 
     void start_configurer() {
-        if(local_joystick && local_joystick->get_device()) {
+        if(local_joystick->get_device()) {
             local_configurer = new interactive_controller_configurer(local_joystick->get_device());
         }
     }
 
     bool neutral_zones_known() {
-        if(local_joystick) {
+        if(local_joystick->get_device()) {
             return local_joystick->get_device()->know_neutral_points();
         }
         return false;
     }
 
     void clear_neutral_zones() {
-        if(local_joystick && local_configurer) {
+        if(local_configurer) {
             local_configurer->clear_neutral_zones();
         }
     } 
 
     void examine_neutral_zones_tick() {
-        if(local_joystick && local_configurer) {
+        if(local_configurer) {
             local_configurer->neutral_zones_tick();
         }
     }
 
     bool neutral_zones_dangerous() {
-        if(local_joystick && local_configurer) {
+        if(local_configurer) {
             return local_configurer->neutral_zones_dangerous();
         }
         return false;
     }
 
     void default_neutral_zones() {
-        if(local_joystick && local_configurer) {
+        if(local_configurer) {
             local_configurer->default_neutral_zones();
         }
     }
   
     listen_result listen_for_signal() {
-        if(local_joystick && local_configurer) {
+        if(local_configurer) {
             return local_configurer->listen_for_signal();
         }
         return still_listening; 
     }
 
     bool retreat() {
-        if(local_joystick && local_configurer) {
+        if(local_configurer) {
             return local_configurer->retreat();
         }
         return false;
     }
    
     void apply_configuration() {
-        if(local_joystick && local_configurer) {
+        if(local_configurer) {
             local_joystick->change_mapping(
                 local_configurer->get_part_kinds(),
                 local_configurer->get_part_ids(),
@@ -2037,8 +2231,8 @@ namespace joystick {
 
     manager::~manager() {
         delete local_manager;
-        haptic::get_effects().clear();
-        haptic::haptic_devices.clear();
+        //haptic::get_effects().clear();
+        //haptic::haptic_devices.clear();
 
         // We rely on our shared_ptrs to various SDL data structures having
         // been deleted (and called the corresponding SDL_CloseThingy()
@@ -2059,9 +2253,8 @@ namespace joystick {
 
     // Update SDL's joystick statuses.  This will circulate input events as well.
     void update() {
-        //if(preferences::use_joystick()) { //XXX Need to confirm safety of doing this.  
-            SDL_JoystickUpdate();
-        //}
+        // XXX Is this safe if SDL joystick module didn't start?
+        SDL_JoystickUpdate();
     }
 
 
@@ -2085,49 +2278,39 @@ namespace joystick {
 
 }
 
+
 namespace haptic {
-	void play(const std::string& id, int iters)
-	{
-		for(auto hd : haptic_devices) {
-			auto it = get_effects().find(hd.second.get());
-			if(it != get_effects().end()) {
-				auto idit = it->second.find(id);
-				if(idit == it->second.end()) {
-					SDL_HapticRumblePlay(hd.second.get(), 1.0, 750);
-				} else {
-					SDL_HapticRunEffect(hd.second.get(), idit->second, iters);
-				}
-			} else {
-				SDL_HapticRumblePlay(hd.second.get(), 1.0, 750);
-			}
-		}
+
+	void play(const std::string& id, int iters) {   
+        std::cerr << "I'm ready to rumble with " << id << " for " << iters << "!" << std::endl;
+        local_joystick->play_haptic_effect(id, iters);
 	}
 
-	void stop(const std::string& id)
-	{
-		for(auto hd : haptic_devices) {
-			auto it = get_effects().find(hd.second.get());
-			auto idit = it->second.find(id);
-			if(idit == it->second.end()) {
-				SDL_HapticStopEffect(hd.second.get(), idit->second);
-			}
-		}
+	void stop(const std::string& id) {
+        local_joystick->stop_haptic_effect(id);
+
+        // For each devivice, try and find its own effects map.
+        // Assume this works.
+        // Then find the current "id" effect in it.
+        // Only if we couldn't find that effect in the table, do we then try and stop something... hmmmm... we're dereferencing end() which is undereferencable.
+        // Suspect this always runs ineffectually.
+		//for(auto hd : haptic_devices) {
+		//	auto it = get_effects().find(hd.second.get());
+		//	auto idit = it->second.find(id);
+		//	if(idit == it->second.end()) {
+		//	}
+		//}
 	}
 
-	void stop_all()
-	{
-		for(auto hd : haptic_devices) {
-			SDL_HapticStopAll(hd.second.get());
-		}
-	}
+	void stop_all() {
+        local_joystick->stop_all_haptic_effects();
+    }
 
-	HapticEffectCallable::HapticEffectCallable(const std::string& name, const variant& effect)
-	{
+	HapticEffectCallable::HapticEffectCallable(const std::string& name, const variant& effect) {
 		load(name, effect);
 	}
 
-	HapticEffectCallable::~HapticEffectCallable()
-	{
+	HapticEffectCallable::~HapticEffectCallable() {
 	}
 
 	namespace {
@@ -2146,155 +2329,142 @@ namespace haptic {
 	}
 
 	void HapticEffectCallable::load(const std::string& name, const variant& eff) {
-		SDL_HapticEffect effect;
-		SDL_memset(&effect, 0, sizeof(effect));
+        
+        SDL_HapticEffect effect;
+        SDL_memset(&effect, 0, sizeof(effect));
 
-		// convert from our variant map to an SDL_HapticEffect structure.
-		ASSERT_LOG(eff.has_key("type"), "FATAL: haptic effects must have 'type' key.");
-		ASSERT_LOG(eff["type"].is_string(), "FATAL: 'type' key must be a string.");
-		std::string type = eff["type"].as_string();
+        // convert from our variant map to an SDL_HapticEffect structure.
+        ASSERT_LOG(eff.has_key("type"), "FATAL: haptic effects must have 'type' key.");
+        ASSERT_LOG(eff["type"].is_string(), "FATAL: 'type' key must be a string.");
+        std::string type = eff["type"].as_string();
 
-		Uint32 length = eff["length"].as_int();
-		Uint16 delay = Uint16(eff["delay"].as_int());
+        Uint32 length = eff["length"].as_int();
+        Uint16 delay = Uint16(eff["delay"].as_int());
 
-		Uint16 button = 0;
-		if(eff.has_key("button")) {
-			button = Uint16(eff["button"].as_int());
-		}
-		Uint16 interval = 0;
-		if(eff.has_key("interval")) {
-			interval = Uint16(eff["interval"].as_int());
-		}
+        Uint16 button = 0;
+        if(eff.has_key("button")) {
+            button = Uint16(eff["button"].as_int());
+        }
+        Uint16 interval = 0;
+        if(eff.has_key("interval")) {
+            interval = Uint16(eff["interval"].as_int());
+        }
 
-		Uint16 attack_length = 0;
-		if(eff.has_key("attack_length")) {
-			attack_length = Uint16(eff["attack_length"].as_int());
-		}
-		Uint16 attack_level = 0;
-		if(eff.has_key("attack_level")) {
-			attack_level = Uint16(eff["attack_level"].as_int());
-		}
-		Uint16 fade_length = 0;
-		if(eff.has_key("fade_length")) {
-			fade_length = Uint16(eff["fade_length"].as_int());
-		}
-		Uint16 fade_level = 0;
-		if(eff.has_key("fade_level")) {
-			fade_level = Uint16(eff["fade_level"].as_int());
-		}
+        Uint16 attack_length = 0;
+        if(eff.has_key("attack_length")) {
+            attack_length = Uint16(eff["attack_length"].as_int());
+        }
+        Uint16 attack_level = 0;
+        if(eff.has_key("attack_level")) {
+            attack_level = Uint16(eff["attack_level"].as_int());
+        }
+        Uint16 fade_length = 0;
+        if(eff.has_key("fade_length")) {
+            fade_length = Uint16(eff["fade_length"].as_int());
+        }
+        Uint16 fade_level = 0;
+        if(eff.has_key("fade_level")) {
+            fade_level = Uint16(eff["fade_level"].as_int());
+        }
 
-		SDL_HapticDirection direction;
-		if(eff.has_key("direction")) {
-			const std::string& dir = eff["direction"].as_string();
-			if(dir == "polar") {
-				direction.type = SDL_HAPTIC_POLAR;
-				direction.dir[0] =  eff["direction_rotation0"].as_int();
-			} else if(dir == "cartesian") {
-				direction.type = SDL_HAPTIC_CARTESIAN;
-				direction.dir[0] =  eff["direction_x"].as_int();
-				direction.dir[1] =  eff["direction_y"].as_int();
-				if(eff.has_key("direction_z")) {
-					direction.dir[2] =  eff["direction_z"].as_int();
-				}
-			} else if(dir == "sepherical") {
-				direction.type = SDL_HAPTIC_SPHERICAL;
-				direction.dir[0] =  eff["direction_rotation0"].as_int();
-				if(eff.has_key("direction_rotation1")) {
-					direction.dir[1] =  eff["direction_rotation1"].as_int();
-				}
-			} else {
-				ASSERT_LOG(false, "FATAL: Unknown direction value '" << dir << "'");
-			}
-		}
+        SDL_HapticDirection direction;
+        if(eff.has_key("direction")) {
+            const std::string& dir = eff["direction"].as_string();
+            if(dir == "polar") {
+                direction.type = SDL_HAPTIC_POLAR;
+                direction.dir[0] =  eff["direction_rotation0"].as_int();
+            } else if(dir == "cartesian") {
+                direction.type = SDL_HAPTIC_CARTESIAN;
+                direction.dir[0] =  eff["direction_x"].as_int();
+                direction.dir[1] =  eff["direction_y"].as_int();
+                if(eff.has_key("direction_z")) {
+                    direction.dir[2] =  eff["direction_z"].as_int();
+                }
+            } else if(dir == "sepherical") {
+                direction.type = SDL_HAPTIC_SPHERICAL;
+                direction.dir[0] =  eff["direction_rotation0"].as_int();
+                if(eff.has_key("direction_rotation1")) {
+                    direction.dir[1] =  eff["direction_rotation1"].as_int();
+                }
+            } else {
+                ASSERT_LOG(false, "FATAL: Unknown direction value '" << dir << "'");
+            }
+        }
 
-		if(type == "constant") {
-			effect.type = SDL_HAPTIC_CONSTANT;
-			effect.constant.length = eff["level"].as_int();
-			effect.constant.attack_length = attack_length;
-			effect.constant.attack_level = attack_level;
-			effect.constant.fade_length = fade_length;
-			effect.constant.fade_level = fade_level;
-			effect.constant.button = button;
-			effect.constant.interval = interval;
-			effect.constant.length = length;
-			effect.constant.delay = delay;
-		} else if(type == "sine" || type == "sqaure" || type == "triangle" || type == "sawtooth_up" || type == "sawtooth_down") {
-			if(type == "sine") {
-				effect.type = SDL_HAPTIC_SINE;
-			//} else if(type == "sqaure") {
-			//	effect.type = SDL_HAPTIC_SQUARE;
-			} else if(type == "triangle") {
-				effect.type = SDL_HAPTIC_TRIANGLE;
-			} else if(type == "sawtooth_up") {
-				effect.type = SDL_HAPTIC_SAWTOOTHUP;
-			} else if(type == "sawtooth_down") {
-				effect.type = SDL_HAPTIC_SAWTOOTHDOWN;
-			}
-			effect.periodic.period = eff["period"].as_int();
-			effect.periodic.magnitude = eff["magnitude"].as_int();
-			if(eff.has_key("offset")) {
-				effect.periodic.offset = eff["offset"].as_int();
-			}
-			if(eff.has_key("phase")) {
-				effect.periodic.phase = eff["phase"].as_int();
-			}
-			effect.periodic.attack_length = attack_length;
-			effect.periodic.attack_level = attack_level;
-			effect.periodic.fade_length = fade_length;
-			effect.periodic.fade_level = fade_level;
-			effect.periodic.button = button;
-			effect.periodic.interval = interval;
-			effect.periodic.length = length;
-			effect.periodic.delay = delay;
-		} else if(type == "spring" || type == "damper" || type == "inertia" || type == "friction") {
-			if(type == "spring") {
-				effect.type = SDL_HAPTIC_SPRING;
-			} else if(type == "damper") {
-				effect.type = SDL_HAPTIC_DAMPER;
-			} else if(type == "inertia") {
-				effect.type = SDL_HAPTIC_INERTIA;
-			} else if(type == "friction") {
-				effect.type = SDL_HAPTIC_FRICTION;
-			}
-			effect.condition.button = button;
-			effect.condition.interval = interval;
-			effect.condition.length = length;
-			effect.condition.delay = delay;
-			get_list3u(effect.condition.right_sat, eff["right_saturation"]);
-			get_list3u(effect.condition.left_sat, eff["left_saturation"]);
-			get_list3s(effect.condition.right_coeff, eff["right_coefficient"]);
-			get_list3s(effect.condition.left_coeff, eff["left_coefficient"]);
-			get_list3u(effect.condition.deadband, eff["deadband"]);
-			get_list3s(effect.condition.center, eff["center"]);
-		} else if(type == "ramp") {
-			effect.type = SDL_HAPTIC_RAMP;
-			effect.ramp.start = eff["start"].as_int();
-			effect.ramp.start = eff["end"].as_int();
-			effect.ramp.attack_length = attack_length;
-			effect.ramp.attack_level = attack_level;
-			effect.ramp.fade_length = fade_length;
-			effect.ramp.fade_level = fade_level;
-			effect.ramp.button = button;
-			effect.ramp.interval = interval;
-		} else if(type == "custom") {
-			effect.type = SDL_HAPTIC_CUSTOM;
-		}
-		
-		for(auto hd : haptic_devices) {
-			int id = SDL_HapticNewEffect(hd.second.get(), &effect);
-			if(id >= 0) {
-				auto it = get_effects().find(hd.second.get());
-				if(it != get_effects().end()) {
-					it->second[name] = id;
-				} else {
-					std::map<std::string,int> m;
-					m[name] = id;
-					get_effects()[hd.second.get()] = m;
-				}
-			} else {
-				std::cerr << "WARNING: error creating haptic effect(" << name << "): " << SDL_GetError() << std::endl;
-			}
-		}
+        if(type == "constant") {
+            effect.type = SDL_HAPTIC_CONSTANT;
+            effect.constant.length = eff["level"].as_int();
+            effect.constant.attack_length = attack_length;
+            effect.constant.attack_level = attack_level;
+            effect.constant.fade_length = fade_length;
+            effect.constant.fade_level = fade_level;
+            effect.constant.button = button;
+            effect.constant.interval = interval;
+            effect.constant.length = length;
+            effect.constant.delay = delay;
+        } else if(type == "sine" || type == "sqaure" || type == "triangle" || type == "sawtooth_up" || type == "sawtooth_down") {
+            if(type == "sine") {
+                effect.type = SDL_HAPTIC_SINE;
+            //} else if(type == "sqaure") {
+            //	effect.type = SDL_HAPTIC_SQUARE;
+            } else if(type == "triangle") {
+                effect.type = SDL_HAPTIC_TRIANGLE;
+            } else if(type == "sawtooth_up") {
+                effect.type = SDL_HAPTIC_SAWTOOTHUP;
+            } else if(type == "sawtooth_down") {
+                effect.type = SDL_HAPTIC_SAWTOOTHDOWN;
+            }
+            effect.periodic.period = eff["period"].as_int();
+            effect.periodic.magnitude = eff["magnitude"].as_int();
+            if(eff.has_key("offset")) {
+                effect.periodic.offset = eff["offset"].as_int();
+            }
+            if(eff.has_key("phase")) {
+                effect.periodic.phase = eff["phase"].as_int();
+            }
+            effect.periodic.attack_length = attack_length;
+            effect.periodic.attack_level = attack_level;
+            effect.periodic.fade_length = fade_length;
+            effect.periodic.fade_level = fade_level;
+            effect.periodic.button = button;
+            effect.periodic.interval = interval;
+            effect.periodic.length = length;
+            effect.periodic.delay = delay;
+        } else if(type == "spring" || type == "damper" || type == "inertia" || type == "friction") {
+            if(type == "spring") {
+                effect.type = SDL_HAPTIC_SPRING;
+            } else if(type == "damper") {
+                effect.type = SDL_HAPTIC_DAMPER;
+            } else if(type == "inertia") {
+                effect.type = SDL_HAPTIC_INERTIA;
+            } else if(type == "friction") {
+                effect.type = SDL_HAPTIC_FRICTION;
+            }
+            effect.condition.button = button;
+            effect.condition.interval = interval;
+            effect.condition.length = length;
+            effect.condition.delay = delay;
+            get_list3u(effect.condition.right_sat, eff["right_saturation"]);
+            get_list3u(effect.condition.left_sat, eff["left_saturation"]);
+            get_list3s(effect.condition.right_coeff, eff["right_coefficient"]);
+            get_list3s(effect.condition.left_coeff, eff["left_coefficient"]);
+            get_list3u(effect.condition.deadband, eff["deadband"]);
+            get_list3s(effect.condition.center, eff["center"]);
+        } else if(type == "ramp") {
+            effect.type = SDL_HAPTIC_RAMP;
+            effect.ramp.start = eff["start"].as_int();
+            effect.ramp.start = eff["end"].as_int();
+            effect.ramp.attack_length = attack_length;
+            effect.ramp.attack_level = attack_level;
+            effect.ramp.fade_length = fade_length;
+            effect.ramp.fade_level = fade_level;
+            effect.ramp.button = button;
+            effect.ramp.interval = interval;
+        } else if(type == "custom") {
+            effect.type = SDL_HAPTIC_CUSTOM;
+        }
+   
+        local_manager->add_haptic_effect(name, effect);
 	}
 
 	BEGIN_DEFINE_CALLABLE_NOBASE(HapticEffectCallable)
