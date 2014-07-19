@@ -402,12 +402,10 @@ void show_controller_select_dialog()
     joystick_ids->insert(joystick_ids->begin(), joystick::no_id);
 
     dropdown_widget* select_dropdown = new dropdown_widget(*joystick_names, button_width, 20);
-    //XXX memory leak: need to dispose of this
-    select_dropdown->set_zorder(9);
+    widget_ptr dropdown(select_dropdown);
     controller_dropdown = select_dropdown;
+    select_dropdown->set_zorder(9);
     set_dropdown_and_checkboxes_from_curr_controller();
-
-   
     select_dropdown->set_on_select_handler(set_controller_and_checkboxes_from_dropdown_event);
 
     // Place widgets in dialog	

@@ -972,40 +972,40 @@ namespace joystick {
                 if(device->prefer_sdl_gc_setup()) {
                     std::cerr << "INFO: Using default configuration style sdl_gc_setup." << std::endl;
                     signal_map.push_back(
+                        union_signal::make(
+                            real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_UP, 0, 0),
                             union_signal::make(
-                                real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_UP, 0, 0),
-                                union_signal::make(
-                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTY, lowest, -dead_pad_ex),
-                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTY, lowest, -dead_pad_ex)
-                                )
+                                real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTY, lowest, -dead_pad_ex),
+                                real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTY, lowest, -dead_pad_ex)
                             )
+                        )
                     ); 
                     signal_map.push_back(
+                        union_signal::make(
+                            real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_DOWN, 0, 0),
                             union_signal::make(
-                                real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_DOWN, 0, 0),
-                                union_signal::make(
-                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTY, dead_pad_ex, highest),
-                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTY, dead_pad_ex, highest)
-                                )
+                                real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTY, dead_pad_ex, highest),
+                                real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTY, dead_pad_ex, highest)
                             )
+                        )
                     ); 
                     signal_map.push_back(
+                        union_signal::make(
+                            real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_LEFT, 0, 0),
                             union_signal::make(
-                                real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_LEFT, 0, 0),
-                                union_signal::make(
-                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTX, lowest, -dead_pad_ex),
-                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTX, lowest, -dead_pad_ex)
-                                )
+                                real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTX, lowest, -dead_pad_ex),
+                                real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTX, lowest, -dead_pad_ex)
                             )
+                        )
                     ); 
                     signal_map.push_back(
+                        union_signal::make(
+                            real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_RIGHT, 0, 0),
                             union_signal::make(
-                                real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_DPAD_RIGHT, 0, 0),
-                                union_signal::make(
-                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTX, dead_pad_ex, highest),
-                                    real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTX, dead_pad_ex, highest)
-                                )
+                                real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_LEFTX, dead_pad_ex, highest),
+                                real_controller_signal::make(device, AXIS, SDL_CONTROLLER_AXIS_RIGHTX, dead_pad_ex, highest)
                             )
+                        )
                     );
                     signal_map.push_back(real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_A, 0, 0)); 
                     signal_map.push_back(real_controller_signal::make(device, BUTTON, SDL_CONTROLLER_BUTTON_B, 0, 0)); 
@@ -1380,9 +1380,16 @@ namespace joystick {
     class joystick_manager {
 
         private:
+            // Ordered list of physical joysticks / game controllers we have opened.
             std::vector<std::shared_ptr<sdl_controller>> joysticks;
+
+            // Controller reader connected to one joystick for our one-and-only player.
             std::shared_ptr<player_controller> local_player_controller;
+
+            // Album of haptic effects, these get uploaded to capable controllers.
             std::map<std::string, SDL_HapticEffect> haptic_effect_album;
+            
+            // Whether we try to use haptic effects when they are supported.
             bool haptics_allowed;
 
         public:
@@ -1555,8 +1562,8 @@ namespace joystick {
             } 
 
             ~joystick_manager() {
-                local_player_controller = NULL; // Should delete underlying player_controller
-                joysticks.clear(); // Should SDL_ThingyClose() underlying joysticks
+                local_player_controller = NULL; // This should delete underlying player_controller
+                joysticks.clear(); // This should SDL_ThingyClose() underlying joysticks
                 haptic_effect_album.clear();
             }
 
@@ -2134,8 +2141,6 @@ namespace joystick {
     // Singular interface wrappers for interactive configurer.  See header file.
     //
     
-    // XXX suspect testing local_joystick is non-null is neither necessary nor sufficient to ensure safety in the following calls; we always have a player controller, even if it contains an empty device, and we cannot assume get-device() will not return NULL.
-
     void start_configurer() {
         if(local_joystick->get_device()) {
             local_configurer = new interactive_controller_configurer(local_joystick->get_device());
@@ -2219,8 +2224,6 @@ namespace joystick {
 
     manager::~manager() {
         delete local_manager;
-        //haptic::get_effects().clear();
-        //haptic::haptic_devices.clear();
 
         // We rely on our shared_ptrs to various SDL data structures having
         // been deleted (and called the corresponding SDL_CloseThingy()
@@ -2276,18 +2279,6 @@ namespace haptic {
 
 	void stop(const std::string& id) {
         local_joystick->stop_haptic_effect(id);
-
-        // For each devivice, try and find its own effects map.
-        // Assume this works.
-        // Then find the current "id" effect in it.
-        // Only if we couldn't find that effect in the table, do we then try and stop something... hmmmm... we're dereferencing end() which is undereferencable.
-        // Suspect this always runs ineffectually.
-		//for(auto hd : haptic_devices) {
-		//	auto it = get_effects().find(hd.second.get());
-		//	auto idit = it->second.find(id);
-		//	if(idit == it->second.end()) {
-		//	}
-		//}
 	}
 
 	void stop_all() {
