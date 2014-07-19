@@ -82,7 +82,10 @@ namespace {
     std::shared_ptr<std::vector<std::string>> joystick_names;
     std::shared_ptr<std::vector<SDL_JoystickID>> joystick_ids;
 
-    // Checkboxes for default and saved config on controller select dialog
+    // Currently active Controller Select Dialog, its checkboxes for default
+    // and saved config, and its dropdown list of controllers
+    gui::dialog* curr_controller_select_dialog;
+    gui::dropdown_widget* controller_dropdown;
     gui::checkbox* default_config_check;
     gui::checkbox* saved_config_check;
 
@@ -235,6 +238,62 @@ void synchronise_checkboxes_joystick() {
     }
 }
 
+    // Aligns the selected controller in the dropdown list with the one that is
+    // actually in use now, and likewise selects and displays the relevant
+    // configuration checkboxes for that controller.
+void set_dropdown_and_checkboxes_from_curr_controller() {
+    
+    int current_device_dropdown_position;
+    
+    // Find the current controller in the drop down list and select it.  If
+    // joysticks are turned off, then the current controller is the keyboard.
+    if(joystick::current_device_id() == joystick::no_id) {
+        current_device_dropdown_position = 0;
+        synchronise_checkboxes_keyboard();
+    } else {
+        current_device_dropdown_position = 0;
+        for(int j = 0; j < joystick_ids->size(); j++) {
+            if((*joystick_ids)[j] == joystick::current_device_id()) {
+                current_device_dropdown_position = j;
+                synchronise_checkboxes_joystick();
+                break; 
+            }
+        }
+    }
+
+    controller_dropdown->set_selection(current_device_dropdown_position); 
+}
+
+    // This is the dropdown list event handler for when the user selects a different controller.
+    // If the user selects a joystick, then preferences::use_joystick is turned on and we change
+    // the joystick device.  If the user selects the keyboard, then preferences::use_joystick is
+    // turned off. 
+    //
+    // This function also synchronises the configuration checkboxes.
+    //
+    // Returns the position of the chosen joystick in the joystick module's device list, or
+    // joystick::no_device if only the keyboard was chosen.
+int set_controller_and_checkboxes_from_dropdown_event(int selection, const std::string& s) {
+    int ret;
+    
+    if(selection == 0) {
+        joystick::change_device(joystick::no_device);
+        joystick::set_joystick_selection_preferences();
+        ret = joystick::no_device;
+        synchronise_checkboxes_keyboard();
+    } else {
+        joystick::change_device(selection - 1);
+        joystick::set_joystick_selection_preferences();
+        ret = selection - 1;
+        synchronise_checkboxes_joystick();
+    }
+    
+    return ret;
+}
+
+    //
+    // Assemble and run the Controller Select dialog.
+    //
 void show_controller_select_dialog()
 {
     // Layout parameters
@@ -305,6 +364,7 @@ void show_controller_select_dialog()
                                 window_w, 
                                 window_h
     );
+    curr_controller_select_dialog = &d;
 	d.set_padding(padding);
 	d.set_background_frame("empty_window");
 	d.set_upscale_frame(upscale_dialog_frame);
@@ -313,7 +373,7 @@ void show_controller_select_dialog()
     // Buttons
 	widget_ptr configure_button(
         new button( configure_button_label, 
-                    []() { show_configure_dialog(); synchronise_checkboxes_joystick(); }, 
+                    []() { show_configure_dialog(); set_dropdown_and_checkboxes_from_curr_controller(); }, 
                     BUTTON_STYLE_NORMAL, 
                     button_resolution)
     );
@@ -342,48 +402,13 @@ void show_controller_select_dialog()
     joystick_ids->insert(joystick_ids->begin(), joystick::no_id);
 
     dropdown_widget* select_dropdown = new dropdown_widget(*joystick_names, button_width, 20);
+    //XXX memory leak: need to dispose of this
     select_dropdown->set_zorder(9);
+    controller_dropdown = select_dropdown;
+    set_dropdown_and_checkboxes_from_curr_controller();
 
-    // Find the current controller in the drop down list and select it.  If
-    // joysticks are turned off, then the current controller is the keyboard.
-    int current_device_dropdown_position;
-    if(joystick::current_device_id() == joystick::no_id) { //XXX!preferences::use_joystick()) {
-        current_device_dropdown_position = 0;
-        synchronise_checkboxes_keyboard();
-    } else {
-        current_device_dropdown_position = 0;
-        for(int j = 0; j < joystick_ids->size(); j++) {
-            if((*joystick_ids)[j] == joystick::current_device_id()) {
-                current_device_dropdown_position = j;
-                synchronise_checkboxes_joystick();
-                break;
-            }
-        }
-    }
-
-    select_dropdown->set_selection(current_device_dropdown_position); 
    
-    // Set up the handler so that we change controllers when the list selection is changed.  If the user selects a joystick,
-    // then preferences::use_joystick is turned on and we change the joystick device.  If the user selects the keyboard,
-    // then preferences::use_joystick is turned off. 
-    int ret; // Unused dummy
-    select_dropdown->set_on_select_handler(
-            [&ret] (int selection,const std::string& s) {
-                if(selection == 0) {
-                    //preferences::set_use_joystick(false);
-                    joystick::change_device(joystick::no_device);
-                    joystick::set_joystick_selection_preferences();
-                    ret = joystick::no_device;
-                    synchronise_checkboxes_keyboard();
-                } else {
-                    //preferences::set_use_joystick(true);
-                    joystick::change_device(selection - 1);
-                    joystick::set_joystick_selection_preferences();
-                    ret = selection - 1;
-                    synchronise_checkboxes_joystick();
-                }
-            }
-    );
+    select_dropdown->set_on_select_handler(set_controller_and_checkboxes_from_dropdown_event);
 
     // Place widgets in dialog	
     d.set_padding(padding);

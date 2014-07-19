@@ -340,18 +340,6 @@ namespace joystick {
                 std::cerr   << "Warning: Failed to play a simple rumble effect." << std::endl
                             << "SDL: " << SDL_GetError() << std::endl;
             }
-
-            std::cerr << "Now to rumba!" << std::endl;
-            SDL_Delay(1200);
-            std::cerr << "First test hit." << std::endl;
-            SDL_HapticRumblePlay(hc, 1.0, 300);
-            SDL_Delay(1200);
-            std::cerr << "Second test hit." << std::endl;
-            SDL_HapticRumblePlay(hc, 1.0, 300);
-            SDL_Delay(1200);
-            std::cerr << "Third test hit." << std::endl;
-            SDL_HapticRumblePlay(hc, 1.0, 300);
-
         }
         return hc;
     }
